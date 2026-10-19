@@ -151,119 +151,7 @@ Media URLs: ${media_refs.slice(0, 3).join(', ') || 'none'}`;
       priorViolationsCount: user?.standingStrikeCount || 0,
     });
 
-    let caseId: string | undefined = undefined;
-
-    // Map categories to Prisma enum
-    let mappedCategory: ModerationCategory = ModerationCategory.OTHER;
-    if (policyResult.categories.includes('child_safety')) mappedCategory = ModerationCategory.CHILD_SAFETY;
-    else if (policyResult.categories.includes('hate_speech')) mappedCategory = ModerationCategory.HATE_SPEECH;
-    else if (policyResult.categories.includes('credible_violence')) mappedCategory = ModerationCategory.VIOLENCE;
-    else if (policyResult.categories.includes('harassment') || policyResult.categories.includes('targeted_insult')) mappedCategory = ModerationCategory.HARASSMENT;
-    else if (policyResult.categories.includes('scam') || policyResult.categories.includes('crypto_scam')) mappedCategory = ModerationCategory.SCAM_FRAUD;
-    else if (policyResult.categories.includes('nsfw')) mappedCategory = ModerationCategory.SEXUAL_CONTENT;
-    else if (policyResult.categories.includes('spam_caption') || policyResult.categories.includes('gibberish')) mappedCategory = ModerationCategory.SPAM;
-
-    // 4. Create ModerationCase if severity >= 1 or non-ALLOW decision
-    if (policyResult.severity >= 1 || policyResult.decision !== 'ALLOW') {
-      try {
-        const modCase = await (this.prisma as any).moderationCase.create({
-          data: {
-            subjectUserId: user_id,
-            contentId: content_id,
-            contentType: content_type.toUpperCase(),
-            feature: feature.toLowerCase(),
-            source: 'AUTOMATED',
-            category: mappedCategory,
-            severity: policyResult.severity,
-            providerScores: {
-              confidence: aiRes.confidence,
-              flags: aiRes.flags,
-              rawReason: aiRes.reason,
-            },
-            reasonCode: policyResult.reasonCode,
-            automatedDecision: policyResult.decision as ModerationDecision,
-            finalDecision: policyResult.decision as ModerationDecision,
-            humanReviewRequired: policyResult.humanReviewRequired,
-            status: policyResult.humanReviewRequired
-              ? ModerationCaseStatus.IN_REVIEW
-              : ModerationCaseStatus.OPEN,
-          },
-        });
-        caseId = modCase.id;
-
-        // Apply account standing consequences for high severity violations
-        if (policyResult.decision === 'BLOCK' && policyResult.severity >= 3) {
-          const action =
-            policyResult.severity === 4
-              ? AccountViolationAction.SUSPENSION_24H
-              : AccountViolationAction.STRIKE;
-
-          await (this.prisma as any).accountViolation.create({
-            data: {
-              userId: user_id,
-              caseId: modCase.id,
-              category: mappedCategory,
-              severity: policyResult.severity,
-              reasonCode: policyResult.reasonCode,
-              action,
-              restrictionScope: policyResult.severity === 4 ? 'ALL' : 'POSTING',
-              restrictionStart: new Date(),
-              restrictionEnd:
-                policyResult.severity === 4
-                  ? new Date(Date.now() + 24 * 60 * 60 * 1000)
-                  : null,
-            },
-          });
-
-          await (this.prisma as any).user.update({
-            where: { id: user_id },
-            data: {
-              accountStanding:
-                policyResult.severity === 4 ? AccountStanding.SUSPENDED : AccountStanding.RESTRICTED,
-              standingStrikeCount: { increment: 1 },
-              standingUntil:
-                policyResult.severity === 4
-                  ? new Date(Date.now() + 24 * 60 * 60 * 1000)
-                  : null,
-              standingReason: policyResult.reasonCode,
-            },
-          });
-        } else if (policyResult.decision === 'WARN') {
-          await (this.prisma as any).user.update({
-            where: { id: user_id },
-            data: {
-              standingWarningCount: { increment: 1 },
-            },
-          });
-        }
-
-        // Audit Log
-        await (this.prisma as any).moderationAuditLog.create({
-          data: {
-            contentType: ['POST', 'COMMENT', 'PRODUCT', 'EBOOK'].includes(content_type.toUpperCase())
-              ? content_type.toUpperCase()
-              : 'POST',
-            contentId: content_id,
-            authorId: user_id,
-            aiVerdict: policyResult.decision === 'ALLOW' ? 'APPROVED' : 'PENDING_APPROVAL',
-            aiReason: policyResult.explanation,
-            aiConfidence: aiRes.confidence,
-            flaggedLabels: aiRes.flags || [],
-            caseId: modCase.id,
-            actorType: 'SYSTEM',
-            action: policyResult.decision,
-            metadata: {
-              severity: policyResult.severity,
-              reasonCode: policyResult.reasonCode,
-              feature,
-            },
-          },
-        });
-      } catch (err: any) {
-        this.logger.error(`Failed to record moderation case: ${err.message}`);
-      }
-    }
-
+    // Return normalized evaluation result without generating cases or penalizing draft checks
     return {
       decision: policyResult.decision,
       risk_level: policyResult.severity as SeverityLevel,
@@ -271,7 +159,6 @@ Media URLs: ${media_refs.slice(0, 3).join(', ') || 'none'}`;
       confidence: Math.round((aiRes.confidence || 0.8) * 100) / 100,
       reason_code: policyResult.reasonCode,
       human_review_required: policyResult.humanReviewRequired,
-      case_id: caseId,
     };
   }
 
