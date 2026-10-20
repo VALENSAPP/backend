@@ -242,6 +242,15 @@ SWAGGER_PASSWORD="your_secure_password"
 
 ## 📖 API Documentation (Swagger)
 
+### PIX tip checkout
+
+`POST /billing/send-tip` selects the provider from the authenticated buyer. For a PagBank buyer, the response includes `provider`, `paymentId`, `orderId`, `currency`, `amountMinor`, `qrCode`, `pixCopyPaste` and `expiresAt`. The existing `url` field is retained for older clients; Stripe responses remain URL-based.
+
+The native client uses `GET /billing/transaction-details?paymentId=...` to check the payment. The Payment response includes the existing localized `status` plus `rawStatus` for machine-readable confirmation. Access remains restricted to the payment sender or receiver. Creating a checkout is not proof of payment; confirmation follows the backend payment status updated by the provider webhook.
+
+Configure the platform PagBank Sandbox credentials only on the backend. Do not include platform tokens in the mobile application.
+
+
 The API is fully documented using OpenAPI/Swagger.
 
 - **Swagger UI Path:** `http://localhost:3002/api` (or `https://api.valens.app/api` on production/staging)
