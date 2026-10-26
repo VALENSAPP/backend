@@ -102,10 +102,12 @@ export class CartService {
                 name: true,
                 shippingOption: true,
                 shippingFee: true,
+                isActive: true,
+                isDeleted: true,
             },
         });
 
-        if (!product) throw new NotFoundException('Product not found');
+        if (!product || !product.isActive || product.isDeleted) throw new NotFoundException('Product not found');
         if (product.userId === userId) throw new BadRequestException('You cannot add your own product to cart');
         if (dto.quantity > product.quantity) {
             throw new BadRequestException('Requested quantity exceeds available stock');
@@ -257,10 +259,10 @@ export class CartService {
 
         const product = await this.prisma.closetItems.findUnique({
             where: { id: cartItem.productId },
-            select: { id: true, quantity: true, price: true, shippingOption: true, shippingFee: true },
+            select: { id: true, quantity: true, price: true, shippingOption: true, shippingFee: true, isActive: true, isDeleted: true },
         });
 
-        if (!product) throw new NotFoundException('Product not found');
+        if (!product || !product.isActive || product.isDeleted) throw new NotFoundException('Product not found');
         if (dto.quantity > product.quantity) {
             throw new BadRequestException('Requested quantity exceeds available stock');
         }
@@ -403,6 +405,8 @@ export class CartService {
                                 quantity: true,
                                 shippingOption: true,
                                 shippingFee: true,
+                                isActive: true,
+                                isDeleted: true,
                             },
                         },
                     },
@@ -448,7 +452,7 @@ export class CartService {
         for (const cartItem of cart.cartItems) {
             const product = cartItem.product;
 
-            if (!product) {
+            if (!product || !product.isActive || product.isDeleted) {
                 issues.push({
                     cartItemId: cartItem.id,
                     productId: cartItem.productId,

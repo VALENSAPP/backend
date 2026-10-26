@@ -105,7 +105,7 @@ export class DashboardService {
     ) {
         const [items, likesGrouped, ordersGrouped] = await Promise.all([
             this.prisma.closetItems.findMany({
-                where: { closetId },
+                where: { closetId, isDeleted: false },
                 select: {
                     id: true,
                     name: true,
@@ -364,7 +364,7 @@ export class DashboardService {
         const closet = await this.getSellerClosetOrThrow(sellerId);
 
         const [totalItems, totalOrders, revenueAggregate, soldAggregate, views, totalLikes] = await Promise.all([
-            this.prisma.closetItems.count({ where: { closetId: closet.id } }),
+            this.prisma.closetItems.count({ where: { closetId: closet.id, isDeleted: false } }),
             this.prisma.order.count({ where: { sellerId } }),
             this.prisma.order.aggregate({
                 where: {
@@ -464,6 +464,7 @@ export class DashboardService {
 
         const where: Prisma.ClosetItemsWhereInput = {
             closetId: closet.id,
+            isDeleted: false,
             ...(query?.category ? { category: query.category } : {}),
             ...(typeof query?.isActive === 'boolean' ? { isActive: query.isActive } : {}),
         };

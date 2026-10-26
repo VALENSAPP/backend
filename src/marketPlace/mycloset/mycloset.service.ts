@@ -469,7 +469,7 @@ export class MyclosetService {
     await this.findMineOrThrow(userId);
 
     return this.prisma.closetItems.findMany({
-      where: { userId },
+      where: { userId, isDeleted: false },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -484,7 +484,7 @@ export class MyclosetService {
     if (!closet) throw new NotFoundException('Mycloset not found');
 
     return this.prisma.closetItems.findMany({
-      where: { closetId, moderationStatus: 'APPROVED' as any },
+      where: { closetId, moderationStatus: 'APPROVED' as any, isDeleted: false },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -494,7 +494,7 @@ export class MyclosetService {
     if (!itemId) throw new BadRequestException('Closet item ID required');
 
     const item = await this.prisma.closetItems.findFirst({
-      where: { id: itemId, userId },
+      where: { id: itemId, userId, isDeleted: false },
     });
     if (!item) throw new NotFoundException('Closet item not found');
     return item;
@@ -547,8 +547,12 @@ export class MyclosetService {
     if (!itemId) throw new BadRequestException('Closet item ID required');
 
     await this.findItemById(userId, itemId);
-    await this.prisma.closetItems.delete({
+    await this.prisma.closetItems.update({
       where: { id: itemId },
+      data: {
+        isDeleted: true,
+        isActive: false,
+      },
     });
     return { message: 'Closet item deleted successfully' };
   }
