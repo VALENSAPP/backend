@@ -84,8 +84,9 @@ export class ClosetChatService {
             : [];
 
         const unreadMap = new Map(unreadByThread.map((row) => [row.threadId, row._count._all]));
+        const totalUnreadCount = unreadByThread.reduce((sum, row) => sum + row._count._all, 0);
 
-        return threads.map((thread) => {
+        const mappedThreads = threads.map((thread) => {
             const lastMessage = thread.messages[0] || null;
             const otherUser = thread.buyerId === userId ? thread.seller : thread.buyer;
 
@@ -99,10 +100,16 @@ export class ClosetChatService {
                 lastMessageAt: thread.lastMessageAt,
                 otherUser,
                 order: thread.order,
+                unreadcount: unreadMap.get(thread.id) || 0,
                 unreadCount: unreadMap.get(thread.id) || 0,
                 lastMessage,
             };
         });
+
+        return {
+            totalUnreadcount: totalUnreadCount,
+            threads: mappedThreads,
+        };
     }
 
     async getThreadMessages(userId: string, threadId: string, page = 1, limit = 20) {
