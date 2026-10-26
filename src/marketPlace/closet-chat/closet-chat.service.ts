@@ -101,7 +101,7 @@ export class ClosetChatService {
                 otherUser,
                 order: thread.order,
                 unreadcount: unreadMap.get(thread.id) || 0,
-                // unreadCount: unreadMap.get(thread.id) || 0,
+                unreadCount: unreadMap.get(thread.id) || 0,
                 lastMessage,
             };
         });
