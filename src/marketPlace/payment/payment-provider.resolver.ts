@@ -14,7 +14,7 @@ export class PaymentProviderResolver {
 
     /**
      * Resolve payment provider for a user.
-     * Prefer persisted paymentProvider; fall back to country/origin; default STRIPE.
+     * Prefer persisted paymentProvider (set via KYC); fall back to country; default STRIPE.
      */
     async resolveProviderForUser(userId: string): Promise<PaymentProvider> {
         const user = await this.prisma.user.findUnique({
@@ -24,17 +24,13 @@ export class PaymentProviderResolver {
 
         if (!user) return 'STRIPE';
 
-        const fromCountry = resolvePaymentProviderFromCountry(user.country);
-        if (fromCountry === 'PAGBANK') {
-            return 'PAGBANK';
-        }
-
         const stored = (user.paymentProvider || '').toUpperCase();
         if (stored === 'PAGBANK' || stored === 'STRIPE') {
             return stored as PaymentProvider;
         }
 
-        return fromCountry;
+        const fromCountry = resolvePaymentProviderFromCountry(user.country);
+        return fromCountry || 'STRIPE';
     }
 
     async resolveProviderForMarketplaceBoost(userId: string): Promise<MarketplacePaymentProvider> {
@@ -42,7 +38,7 @@ export class PaymentProviderResolver {
     }
 
     /**
-     * Ensure user has paymentProvider set (backfill from country if missing).
+     * Ensure user has paymentProvider set (prefer stored paymentProvider; fall back to country or STRIPE).
      */
     async ensureUserPaymentProvider(userId: string): Promise<PaymentProvider> {
         const user = await this.prisma.user.findUnique({
@@ -51,28 +47,17 @@ export class PaymentProviderResolver {
         });
         if (!user) return 'STRIPE';
 
-        const providerFromCountry = resolvePaymentProviderFromCountry(user.country);
-        if (providerFromCountry === 'PAGBANK') {
-            if (user.paymentProvider !== 'PAGBANK') {
-                await this.prisma.user.update({
-                    where: { id: userId },
-                    data: { paymentProvider: 'PAGBANK' },
-                });
-            }
-            return 'PAGBANK';
-        }
-
         const stored = (user.paymentProvider || '').toUpperCase();
         if (stored === 'PAGBANK' || stored === 'STRIPE') {
             return stored as PaymentProvider;
         }
 
-        const provider = providerFromCountry;
+        const providerFromCountry = resolvePaymentProviderFromCountry(user.country) || 'STRIPE';
         await this.prisma.user.update({
             where: { id: userId },
-            data: { paymentProvider: provider },
+            data: { paymentProvider: providerFromCountry },
         });
-        return provider;
+        return providerFromCountry;
     }
 
     resolveFromOrigin(country?: string | null, location?: string | null) {

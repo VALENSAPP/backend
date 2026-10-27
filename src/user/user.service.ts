@@ -10,7 +10,7 @@ import * as path from 'path';
 import * as sgMail from '@sendgrid/mail';
 import { JwtService } from '@nestjs/jwt';
 import { uploadImageToS3 } from '../common/s3.util';
-import { resolvePaymentProviderFromOrigin } from '../common/payment-provider.util';
+import { normalizeCountryCode } from '../common/payment-provider.util';
 // Valens: no wallet creation; users connect third-party non-custodial wallets.
 // import { generateWallet } from '../common/wallet.util';
 // import { encryptSecret } from '../common/crypto.util';
@@ -415,10 +415,7 @@ export class UserService {
         }
 
         const passwordHash = await bcrypt.hash(data.password, 10);
-        const { country: existingUserCountry, paymentProvider: existingUserProvider } = resolvePaymentProviderFromOrigin({
-          country: data.country,
-          location: data.location,
-        });
+        const existingUserCountry = normalizeCountryCode(data.country || data.location);
         const updatedUser = await this.prisma.user.update({
           where: { id: existingUserByEmail.id },
           data: {
@@ -427,7 +424,6 @@ export class UserService {
             ...(data.profile ? { profile: data.profile } : {}),
             ...(data.fcmToken ? { fcmToken: data.fcmToken } : {}),
             ...(existingUserCountry ? { country: existingUserCountry } : {}),
-            paymentProvider: existingUserProvider,
             registrationType: 'NORMAL',
           },
         });
@@ -466,10 +462,7 @@ export class UserService {
 
         const referCode = await this.generateUniqueReferCode();
         const initialReferPoints = referrer ? 500 : 0;
-        const { country: resolvedCountry, paymentProvider: resolvedProvider } = resolvePaymentProviderFromOrigin({
-          country: data.country,
-          location: data.location,
-        });
+        const resolvedCountry = normalizeCountryCode(data.country || data.location);
 
         const userData: any = {
           email: normalizedEmail,
@@ -480,7 +473,7 @@ export class UserService {
           totalPlatformPoints: initialReferPoints,
           userName: normalizedUserName,
           country: resolvedCountry || undefined,
-          paymentProvider: resolvedProvider,
+          paymentProvider: 'STRIPE',
         };
 
         if (data.profile) {
@@ -638,10 +631,7 @@ export class UserService {
 
       const referCode = await this.generateUniqueReferCode();
       const initialReferPoints = referrer ? 500 : 0;
-      const { country, paymentProvider } = resolvePaymentProviderFromOrigin({
-        country: data.country,
-        location: data.location,
-      });
+      const country = normalizeCountryCode(data.country || data.location);
 
       const userData: any = {
         email: normalizedEmail,
@@ -649,14 +639,12 @@ export class UserService {
         googleId: data.googleId,
         twitterId: data.twitterId,
         walletAddress: data.walletAddress ?? undefined,
-        // walletPrivateKey: encryptedPrivateKey,
-        // walletMnemonic: encryptedMnemonic,
         registrationType: data.registrationType,
         referCode,
         referPoints: initialReferPoints,
         totalPlatformPoints: initialReferPoints,
         country: country || undefined,
-        paymentProvider,
+        paymentProvider: 'STRIPE',
       };
       if (data.userName) {
         userData.userName = data.userName;
@@ -863,21 +851,14 @@ export class UserService {
       data.age = Number(dto.age);
     }
     if (dto.country !== undefined && dto.country !== '' && dto.country !== null) {
-      const { country: resolvedCountry, paymentProvider } = resolvePaymentProviderFromOrigin({
-        country: dto.country,
-        location: dto.location,
-      });
+      const resolvedCountry = normalizeCountryCode(dto.country || dto.location);
       if (resolvedCountry) {
         data.country = resolvedCountry;
-        data.paymentProvider = paymentProvider;
       }
     } else if (dto.location !== undefined && dto.location !== '' && dto.location !== null) {
-      const { country: resolvedCountry, paymentProvider } = resolvePaymentProviderFromOrigin({
-        location: dto.location,
-      });
+      const resolvedCountry = normalizeCountryCode(dto.location);
       if (resolvedCountry) {
         data.country = resolvedCountry;
-        data.paymentProvider = paymentProvider;
       }
     }
     if (dto.language !== undefined && dto.language !== '' && dto.language !== null) {
@@ -3418,10 +3399,8 @@ export class UserService {
         const firebaseUserId = decodedToken.uid;
         const userId = uuidv4();
         const referCode = await this.generateUniqueReferCode();
-        const { country, paymentProvider } = resolvePaymentProviderFromOrigin({
-          country: meta?.country,
-          location: meta?.location,
-        });
+        const country = normalizeCountryCode(meta?.country || meta?.location);
+        const paymentProvider = 'STRIPE';
 
         const userData = {
           id: userId,
@@ -3515,10 +3494,8 @@ export class UserService {
         const userId = uuidv4();
         const referCode = await this.generateUniqueReferCode();
         const emailUserName = email ? email.split('@')[0] : undefined;
-        const { country, paymentProvider } = resolvePaymentProviderFromOrigin({
-          country: meta?.country,
-          location: meta?.location,
-        });
+        const country = normalizeCountryCode(meta?.country || meta?.location);
+        const paymentProvider = 'STRIPE';
 
         // const wallet = generateWallet();
         // const encryptionKey = process.env.WALLET_ENCRYPTION_KEY || process.env.JWT_SECRET || '';
@@ -3608,10 +3585,8 @@ export class UserService {
       // If not found, create new user — Valens: do NOT create wallets.
       if (!existingUser) {
         const referCode = await this.generateUniqueReferCode();
-        const { country, paymentProvider } = resolvePaymentProviderFromOrigin({
-          country: meta?.country,
-          location: meta?.location,
-        });
+        const country = normalizeCountryCode(meta?.country || meta?.location);
+        const paymentProvider = 'STRIPE';
         // const wallet = generateWallet();
         // const encryptionKey = process.env.WALLET_ENCRYPTION_KEY || process.env.JWT_SECRET || '';
         // const encryptedPrivateKey = encryptSecret(wallet.privateKey, encryptionKey);

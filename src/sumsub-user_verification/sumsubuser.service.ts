@@ -3,6 +3,7 @@ import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } fr
 import axios, { AxiosRequestConfig } from 'axios';
 import { createHmac } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolveKycPaymentProvider } from '../common/payment-provider.util';
 
 const SUMSUB_KYC_LEVEL_NAME = process.env.SUMSUB_KYC_LEVEL_NAME || process.env.SUMSUB_LEVEL_NAME || 'basic-kyc-level';
 const SUMSUB_TTL_SEC = 600;
@@ -25,6 +26,24 @@ export class KycService {
     this.sumsubAppToken = process.env.SUMSUB_APP_TOKEN || '';
     this.sumsubSecretKey = process.env.SUMSUB_SECRET_KEY || '';
   }
+
+  private async markUserKycApproved(userId: string, rawDocCountry?: string | null) {
+    const { normalizedCountry, paymentProvider } = resolveKycPaymentProvider(rawDocCountry);
+    const updateData: any = {
+      kyc: true,
+      canAccessPlatform: 'true',
+      paymentProvider,
+    };
+    if (normalizedCountry) {
+      updateData.country = normalizedCountry;
+    }
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+    });
+  }
+
+
 
   /* --------------- Sumsub API helpers --------------- */
 
@@ -247,10 +266,28 @@ export class KycService {
     });
 
     if (status === 'APPROVED') {
-      await this.prisma.user.update({
-        where: { id: kycRecord.userId },
-        data: { kyc: true, canAccessPlatform: 'true' },
-      });
+      let docCountry =
+        payload?.info?.country ||
+        payload?.applicant?.info?.country ||
+        payload?.applicant?.country ||
+        payload?.reviewResult?.applicantData?.country;
+
+      if (!docCountry && applicantId) {
+        try {
+          const applicant = await this.sumsubRequest<any>(
+            'GET',
+            `/resources/applicants/${encodeURIComponent(applicantId)}/one`,
+          );
+          docCountry =
+            applicant?.info?.country ||
+            applicant?.info?.idDocs?.[0]?.country ||
+            applicant?.fixedInfo?.country;
+        } catch (err: any) {
+          this.logger.warn(`Could not fetch applicant ${applicantId} info from Sumsub: ${err?.message}`);
+        }
+      }
+
+      await this.markUserKycApproved(kycRecord.userId, docCountry);
       this.logger.log(`User KYC set to true for user ${kycRecord.userId}`);
     }
     this.logger.log(`KYC record ${kycRecord.id} updated to ${status}`);
@@ -307,7 +344,7 @@ export class KycService {
   /**
    * Fetch KYC status from Sumsub API (for sync). Old Veriff fetch is commented.
    */
-  async fetchSumsubStatus(applicantId: string): Promise<{ status: string; reason?: string } | null> {
+  async fetchSumsubStatus(applicantId: string): Promise<{ status: string; reason?: string; country?: string | null } | null> {
     try {
       const data = await this.sumsubRequest<any>(
         'GET',
@@ -315,7 +352,23 @@ export class KycService {
       );
       const reviewAnswer = data?.reviewResult?.reviewAnswer;
       const reviewStatus = data?.reviewStatus;
-      if (reviewAnswer === 'GREEN') return { status: 'approved' };
+      if (reviewAnswer === 'GREEN') {
+        let country: string | null = null;
+        try {
+          const applicant = await this.sumsubRequest<any>(
+            'GET',
+            `/resources/applicants/${encodeURIComponent(applicantId)}/one`,
+          );
+          country =
+            applicant?.info?.country ||
+            applicant?.info?.idDocs?.[0]?.country ||
+            applicant?.fixedInfo?.country ||
+            null;
+        } catch (err: any) {
+          this.logger.warn(`Could not fetch applicant details for ${applicantId}: ${err?.message}`);
+        }
+        return { status: 'approved', country };
+      }
       if (reviewAnswer === 'RED') {
         const reason = data?.reviewResult?.rejectLabels?.[0] || data?.reviewResult?.reviewRejectType || 'Rejected';
         return { status: 'declined', reason };
@@ -404,10 +457,7 @@ export class KycService {
       });
 
       if (mappedStatus === 'APPROVED') {
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: { kyc: true },
-        });
+        await this.markUserKycApproved(userId, sumsubData?.country);
       }
 
       this.logger.log(`Synced KYC status: ${applicantId} → ${mappedStatus}`);
@@ -459,10 +509,7 @@ export class KycService {
           });
 
           if (mappedStatus === 'APPROVED') {
-            await this.prisma.user.update({
-              where: { id: record.userId },
-              data: { kyc: true },
-            });
+            await this.markUserKycApproved(record.userId, sumsubData?.country);
           }
 
           this.logger.log(`Updated KYC ${applicantId}: ${record.status} → ${mappedStatus}`);

@@ -23,6 +23,7 @@ export function normalizeCountryCode(input?: string | null): string | null {
     // Exact / short codes
     if (BRAZIL_ALIASES.has(lower)) return 'BR';
     if (/^[a-z]{2}$/i.test(raw)) return raw.toUpperCase();
+    if (/^[a-z]{3}$/i.test(raw)) return raw.toUpperCase();
 
     // Location-like: "São Paulo, Brazil" / "Brazil" / "BR, ..."
     const parts = lower.split(/[,|/]/).map((p) => p.trim()).filter(Boolean);
@@ -33,9 +34,9 @@ export function normalizeCountryCode(input?: string | null): string | null {
 
     if (/\bbrazil\b/.test(lower) || /\bbrasil\b/.test(lower)) return 'BR';
 
-    // Last token as country name code guess (non-BR leave as uppercase 2-letter if present)
+    // Last token as country name code guess (non-BR leave as uppercase 2-letter or 3-letter if present)
     const last = parts[parts.length - 1];
-    if (last && /^[a-z]{2}$/.test(last)) return last.toUpperCase();
+    if (last && (/^[a-z]{2}$/.test(last) || /^[a-z]{3}$/.test(last))) return last.toUpperCase();
 
     return null;
 }
@@ -43,6 +44,22 @@ export function normalizeCountryCode(input?: string | null): string | null {
 export function resolvePaymentProviderFromCountry(country?: string | null): PaymentProvider {
     const code = normalizeCountryCode(country);
     return code === 'BR' ? 'PAGBANK' : 'STRIPE';
+}
+
+/**
+ * Resolve payment provider specifically from KYC verified document country.
+ * Returns normalized country and provider ('PAGBANK' for Brazil, 'STRIPE' for others).
+ */
+export function resolveKycPaymentProvider(docCountry?: string | null): {
+    normalizedCountry: string | null;
+    paymentProvider: PaymentProvider;
+} {
+    const normalizedCountry = normalizeCountryCode(docCountry);
+    const paymentProvider = resolvePaymentProviderFromCountry(normalizedCountry);
+    return {
+        normalizedCountry,
+        paymentProvider,
+    };
 }
 
 export function resolvePaymentProviderFromOrigin(params: {

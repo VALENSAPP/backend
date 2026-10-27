@@ -4,6 +4,7 @@ import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { createHmac } from 'node:crypto';
+import { resolveKycPaymentProvider } from '../common/payment-provider.util';
 
 @Injectable()
 export class KycService {
@@ -11,6 +12,24 @@ export class KycService {
   private veriffKey = process.env.VERIFF_API_KEY;
 
   constructor(private prisma: PrismaService) { }
+
+  private async markUserKycApproved(userId: string, rawDocCountry?: string | null) {
+    const { normalizedCountry, paymentProvider } = resolveKycPaymentProvider(rawDocCountry);
+    const updateData: any = {
+      kyc: true,
+      canAccessPlatform: 'true',
+      paymentProvider,
+    };
+    if (normalizedCountry) {
+      updateData.country = normalizedCountry;
+    }
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+    });
+  }
+
+
 
   private firstNonEmptyString(values: any[]): string | null {
     for (const value of values) {
@@ -160,11 +179,15 @@ export class KycService {
 
     // Update user.kyc field if approved
     if (mappedStatus === 'APPROVED') {
-      await this.prisma.user.update({
-        where: { id: kycRecord.userId },
-        data: { kyc: true, canAccessPlatform: 'true' },
-      });
-      // console.log(`✅ User KYC status updated to true for user ${kycRecord.userId}`);
+      const docCountry =
+        verification?.document?.country ||
+        verification?.verification?.document?.country ||
+        verification?.person?.country ||
+        verification?.verification?.person?.country ||
+        verification?.person?.nationality ||
+        verification?.verification?.person?.nationality;
+
+      await this.markUserKycApproved(kycRecord.userId, docCountry);
     }
 
 
@@ -219,7 +242,25 @@ export class KycService {
       }
 
       const veriffStatus = verificationData.status;
-      // console.log(`🔍 Fetched Veriff status for ${sessionId}: ${veriffStatus}`);
+
+      let country =
+        verificationData?.document?.country ||
+        verificationData?.person?.country ||
+        verificationData?.person?.nationality ||
+        null;
+
+      if (veriffStatus === 'approved' && !country) {
+        try {
+          const decisionResponse = await axios.get(`${this.veriffBase}/v1/sessions/${sessionId}/decision`, { headers });
+          const decisionData = decisionResponse.data;
+          country =
+            decisionData?.verification?.document?.country ||
+            decisionData?.verification?.person?.country ||
+            decisionData?.verification?.person?.nationality ||
+            decisionData?.document?.country ||
+            null;
+        } catch {}
+      }
 
       let reason = null;
       if (veriffStatus === 'declined') {
@@ -235,7 +276,7 @@ export class KycService {
         }
       }
 
-      return { status: veriffStatus, reason }; // Return object with status and reason
+      return { status: veriffStatus, reason, country };
     } catch (error) {
       console.error('❌ Failed to fetch Veriff status:', error.response?.data || error);
       return null;
@@ -278,10 +319,7 @@ export class KycService {
       });
 
       if (mappedStatus === 'APPROVED') {
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: { kyc: true },
-        });
+        await this.markUserKycApproved(userId, veriffData?.country);
       }
 
       // console.log(`✅ Synced KYC status: ${kycRecord.veriffSessionId} → ${mappedStatus}`);
@@ -368,10 +406,7 @@ export class KycService {
           });
 
           if (mappedStatus === 'APPROVED') {
-            await this.prisma.user.update({
-              where: { id: record.userId },
-              data: { kyc: true },
-            });
+            await this.markUserKycApproved(record.userId, veriffData?.country);
           }
 
           // console.log(`✅ Updated KYC ${record.veriffSessionId}: ${record.status} → ${mappedStatus}`);

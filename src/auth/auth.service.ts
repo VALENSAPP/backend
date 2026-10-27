@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import admin from './firebase.config';
 import axios from 'axios';
 import { MailService } from '../common/mail/mail.service';
-import { resolvePaymentProviderFromOrigin } from '../common/payment-provider.util';
+import { normalizeCountryCode } from '../common/payment-provider.util';
 import * as bcrypt from 'bcryptjs';
 import { normalizeLanguage } from '../notification/notification.translator';
 
@@ -486,10 +486,8 @@ export class AuthService {
         const firebaseUserId = decodedToken.uid;
         const userId = uuidv4();
 
-        const { country, paymentProvider } = resolvePaymentProviderFromOrigin({
-          country: loginDto?.country,
-          location: loginDto?.location,
-        });
+        const country = normalizeCountryCode(loginDto?.country || loginDto?.location);
+        const paymentProvider = 'STRIPE';
 
         const userData = {
           id: userId,
@@ -598,10 +596,8 @@ export class AuthService {
         // New user registration
         const firebaseUserId = decodedToken.uid;
         const userId = uuidv4();
-        const { country, paymentProvider } = resolvePaymentProviderFromOrigin({
-          country: loginDto?.country,
-          location: loginDto?.location,
-        });
+        const country = normalizeCountryCode(loginDto?.country || loginDto?.location);
+        const paymentProvider = 'STRIPE';
 
         const userData = {
           id: userId,
@@ -692,10 +688,8 @@ export class AuthService {
 
       // If not found, create new user
       if (!existingUser) {
-        const { country, paymentProvider } = resolvePaymentProviderFromOrigin({
-          country: loginDto?.country,
-          location: loginDto?.location,
-        });
+        const country = normalizeCountryCode(loginDto?.country || loginDto?.location);
+        const paymentProvider = 'STRIPE';
         const newUser = await this.prisma.user.create({
           data: {
             id: uuidv4(),
