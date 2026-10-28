@@ -511,7 +511,7 @@ export class UserController {
   @Post('send-email-otp')
   @ApiOperation({ summary: 'Send OTP to email for email verification' })
   async sendEmailOtp(@Body() dto: SendEmailOtpDto) {
-    await this.userService.sendEmailOtp(dto.email);
+    await this.userService.sendEmailOtp(dto.email.toLowerCase());
     return { message: 'OTP sent to email' };
   }
 
