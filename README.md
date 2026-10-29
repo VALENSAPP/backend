@@ -215,6 +215,18 @@ PAGBANK_PLATFORM_ACCOUNT_ID="your_platform_account_id"
 PAGBANK_DEFAULT_TAX_ID="12345678909"          # Default fallback CPF/CNPJ for checkout tests
 ```
 
+Connect token exchange and refresh use the platform token together with the configured
+client credentials. Callback state is signed, bound to the application and callback,
+and expires after 15 minutes. All backend instances must use the same platform token
+and callback configuration. Generate a new onboarding link after deploying this change,
+rotating the platform token, or allowing a link to expire; unsigned older links are rejected.
+The provider authorization code remains single-use.
+
+Run `npm run test:pagbank-connect` for isolated Connect regression tests. They execute
+the service and client with synthetic credentials and mocked storage/transport, without
+starting the application, connecting to a database, or calling PagBank. Passing these
+tests does not replace a real Sandbox seller authorization and persisted-link check.
+
 ### Stripe Integration
 ```env
 STRIPE_SECRET_KEY="sk_test_..."
