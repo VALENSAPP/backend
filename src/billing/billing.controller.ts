@@ -122,7 +122,7 @@ export class BillingController {
   @Post('send-tip')
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create Stripe Checkout Session to send a tip (100% to receiver)' })
+  @ApiOperation({ summary: 'Create a tip checkout using the payer payment provider' })
   @ApiBody({ type: SendTipDto })
   async sendTip(
     @Req() req: Request,
@@ -137,6 +137,20 @@ export class BillingController {
       dto.receiverUserId,
       dto.amount,
     );
+    // Keep the legacy URL while exposing the fields required by the native PIX checkout.
+    if ('provider' in session && session.provider === 'PAGBANK') {
+      return {
+        url: session.url,
+        provider: session.provider,
+        paymentId: session.referenceId,
+        orderId: session.orderId,
+        currency: session.currency.toUpperCase(),
+        amountMinor: session.amountMinor,
+        qrCode: session.qrCode,
+        pixCopyPaste: session.pixCopyPaste,
+        expiresAt: session.expiresAt,
+      };
+    }
     return { url: session.url };
   }
 

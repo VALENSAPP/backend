@@ -215,6 +215,18 @@ PAGBANK_PLATFORM_ACCOUNT_ID="your_platform_account_id"
 PAGBANK_DEFAULT_TAX_ID="12345678909"          # Default fallback CPF/CNPJ for checkout tests
 ```
 
+Connect token exchange and refresh use the platform token together with the configured
+client credentials. Callback state is signed, bound to the application and callback,
+and expires after 15 minutes. All backend instances must use the same platform token
+and callback configuration. Generate a new onboarding link after deploying this change,
+rotating the platform token, or allowing a link to expire; unsigned older links are rejected.
+The provider authorization code remains single-use.
+
+Run `npm run test:pagbank-connect` for isolated Connect regression tests. They execute
+the service and client with synthetic credentials and mocked storage/transport, without
+starting the application, connecting to a database, or calling PagBank. Passing these
+tests does not replace a real Sandbox seller authorization and persisted-link check.
+
 ### Stripe Integration
 ```env
 STRIPE_SECRET_KEY="sk_test_..."
@@ -241,6 +253,15 @@ SWAGGER_PASSWORD="your_secure_password"
 ---
 
 ## 📖 API Documentation (Swagger)
+
+### PIX tip checkout
+
+`POST /billing/send-tip` selects the provider from the authenticated buyer. For a PagBank buyer, the response includes `provider`, `paymentId`, `orderId`, `currency`, `amountMinor`, `qrCode`, `pixCopyPaste` and `expiresAt`. The existing `url` field is retained for older clients; Stripe responses remain URL-based.
+
+The native client uses `GET /billing/transaction-details?paymentId=...` to check the payment. The Payment response includes the existing localized `status` plus `rawStatus` for machine-readable confirmation. Access remains restricted to the payment sender or receiver. Creating a checkout is not proof of payment; confirmation follows the backend payment status updated by the provider webhook.
+
+Configure the platform PagBank Sandbox credentials only on the backend. Do not include platform tokens in the mobile application.
+
 
 The API is fully documented using OpenAPI/Swagger.
 

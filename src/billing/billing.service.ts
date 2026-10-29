@@ -2610,6 +2610,8 @@ export class BillingService {
         transactionId: payment.stripePaymentIntentId,
         source: localizedSource,
         status: localized.status,
+        // Clients must not derive payment confirmation from a translated status label.
+        rawStatus: payment.status,
         type: localized.forPayment,
         currency: payment.currency,
         amount: payment.amount,
