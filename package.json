@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node api.js && node --max-old-space-size=4096 dist/main.js",
     "build": "nest build --builder tsc",
+    "test:pagbank-connect": "node --test test/pagbank-connect.test.cjs",
     "format": "prettier --write \"src/**/*.ts\"",
     "start:dev": "node api.js && node --max-old-space-size=4096 node_modules/@nestjs/cli/bin/nest.js start --watch",
     "start:debug": "node api.js && node --max-old-space-size=4096 node_modules/@nestjs/cli/bin/nest.js start --debug --watch",
