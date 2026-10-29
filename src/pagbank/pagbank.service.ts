@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { createHash } from 'crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
 import { NotificationService } from '../notification/notification.service';
@@ -36,7 +36,7 @@ export class PagBankService {
     }
 
     isConnectConfigured(): boolean {
-        return !!(process.env.PAGBANK_CLIENT_ID && (process.env.PAGBANK_CONNECT_REDIRECT_URI || process.env.BACKEND_URL));
+        return this.isConfigured() && !!(process.env.PAGBANK_CLIENT_ID && (process.env.PAGBANK_CONNECT_REDIRECT_URI || process.env.BACKEND_URL));
     }
 
     private getConnectAuthorizeBaseUrl(): string {
@@ -121,6 +121,89 @@ export class PagBankService {
         };
     }
 
+    private signConnectState(payload: string): string {
+        // Bind the return to this platform, application and callback without a new secret.
+        return createHmac('sha256', this.client.getPlatformToken())
+            .update(`${process.env.PAGBANK_CLIENT_ID}\n${this.getRedirectUri()}\n${payload}`)
+            .digest('base64url');
+    }
+
+    private createConnectState(userId: string): string {
+        const payload = `v1.${userId}.${Date.now().toString(36)}.${randomBytes(16).toString('base64url')}`;
+        const state = `${payload}.${this.signConnectState(payload)}`;
+        if (state.length > 128) {
+            throw new BadRequestException('Invalid PagBank Connect user identifier');
+        }
+        return state;
+    }
+
+    private getConnectStateUserId(state: string): string {
+        if (typeof state !== 'string' || state.length > 128) {
+            throw new BadRequestException('Invalid PagBank Connect state');
+        }
+        const parts = state.split('.');
+        const [version, userId, issuedAtValue, nonce, signature] = parts;
+        if (parts.length !== 5 || version !== 'v1' ||
+            !/^[a-zA-Z0-9_-]+$/.test(userId || '') ||
+            !/^[a-z0-9]+$/.test(issuedAtValue || '') ||
+            !/^[a-zA-Z0-9_-]{22}$/.test(nonce || '') ||
+            !/^[a-zA-Z0-9_-]{43}$/.test(signature || '')) {
+            throw new BadRequestException('Invalid PagBank Connect state');
+        }
+        const issuedAt = Number.parseInt(issuedAtValue, 36);
+        const now = Date.now();
+        const expected = this.signConnectState(parts.slice(0, 4).join('.'));
+        if (!Number.isSafeInteger(issuedAt) || issuedAt.toString(36) !== issuedAtValue ||
+            issuedAt > now + 60_000 || now - issuedAt > 15 * 60_000 ||
+            !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+            throw new BadRequestException('Invalid or expired PagBank Connect state');
+        }
+        return userId;
+    }
+
+    private async requestConnectToken(endpoint: '/oauth2/token' | '/oauth2/refresh', body: object) {
+        const clientId = process.env.PAGBANK_CLIENT_ID;
+        if (!clientId) {
+            throw new BadRequestException('PAGBANK_CLIENT_ID is required for token exchange');
+        }
+        const api = this.client.createApi();
+        try {
+            const { data } = await api.post(endpoint, body, {
+                headers: {
+                    X_CLIENT_ID: clientId,
+                    ...(process.env.PAGBANK_CLIENT_SECRET
+                        ? { X_CLIENT_SECRET: process.env.PAGBANK_CLIENT_SECRET }
+                        : {}),
+                },
+                maxRedirects: 0,
+            });
+            return data;
+        } catch (error: any) {
+            const status = Number.isInteger(error?.response?.status) ? error.response.status : 'unknown';
+            // Provider payloads and Axios errors can contain credentials or authorization codes.
+            this.logger.error(`PagBank Connect token request failed (HTTP ${status})`);
+            throw new BadRequestException('PagBank authorization could not be completed. Reconnect your PagBank account.');
+        }
+    }
+
+    private readConnectTokens(data: any, expectedAccountId?: string) {
+        const accessToken = typeof data?.access_token === 'string' ? data.access_token.trim() : '';
+        const refreshToken = typeof data?.refresh_token === 'string' ? data.refresh_token.trim() : '';
+        const accountId = data?.account_id === undefined && expectedAccountId
+            ? expectedAccountId
+            : typeof data?.account_id === 'string' ? data.account_id.trim() : '';
+        const expiresIn = Number(data?.expires_in);
+        const expiresAt = new Date(Date.now() + expiresIn * 1000);
+        if (!accessToken || !accountId || !Number.isFinite(expiresIn) || expiresIn <= 0 ||
+            !Number.isFinite(expiresAt.getTime())) {
+            throw new BadRequestException('PagBank returned incomplete authorization details');
+        }
+        if (expectedAccountId && accountId !== expectedAccountId) {
+            throw new BadRequestException('PagBank returned a different connected account');
+        }
+        return { accessToken, refreshToken: refreshToken || null, accountId, expiresAt };
+    }
+
     async createAccountOnboardingLink(userId: string): Promise<{ onboardingUrl: string; provider: 'PAGBANK' }> {
         const user = await this.prisma.user.findUnique({ where: { id: userId } });
         if (!user) throw new BadRequestException('User not found');
@@ -131,7 +214,7 @@ export class PagBankService {
         }
 
         const redirectUri = this.getRedirectUri();
-        const state = Buffer.from(JSON.stringify({ userId })).toString('base64url');
+        const state = this.createConnectState(userId);
         const scope = process.env.PAGBANK_CONNECT_SCOPE || 'payments.read payments.create accounts.read';
         const params = new URLSearchParams({
             client_id: clientId,
@@ -148,63 +231,16 @@ export class PagBankService {
     }
 
     async handleConnectCallback(params: { code: string; state: string }) {
-        let userId: string;
-        try {
-            const parsed = JSON.parse(Buffer.from(params.state, 'base64url').toString('utf8'));
-            userId = parsed.userId;
-        } catch {
-            throw new BadRequestException('Invalid PagBank Connect state');
+        if (typeof params.code !== 'string' || !params.code.trim()) {
+            throw new BadRequestException('Missing code from PagBank Connect');
         }
-        if (!userId) throw new BadRequestException('Missing userId in PagBank Connect state');
-
-        const clientId = process.env.PAGBANK_CLIENT_ID;
-        if (!clientId) {
-            throw new BadRequestException('PAGBANK_CLIENT_ID is required for token exchange');
-        }
-
-        const redirectUri = this.getRedirectUri();
-        const axios = (await import('axios')).default;
-        let data: any;
-        try {
-            const res = await axios.post(
-                `${this.client.getApiBaseUrl()}/oauth2/token`,
-                {
-                    grant_type: 'authorization_code',
-                    code: params.code,
-                    redirect_uri: redirectUri,
-                },
-                {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Accept: 'application/json',
-                        X_CLIENT_ID: clientId,
-                        ...(process.env.PAGBANK_CLIENT_SECRET
-                            ? { X_CLIENT_SECRET: process.env.PAGBANK_CLIENT_SECRET }
-                            : {}),
-                    },
-                },
-            );
-            data = res.data;
-        } catch (error: any) {
-            this.logger.error(
-                `PagBank OAuth token exchange failed: ${JSON.stringify(error?.response?.data || error?.message)}`,
-            );
-            throw new BadRequestException(
-                error?.response?.data?.message ||
-                'PagBank OAuth token exchange failed. Check CLIENT_ID/SECRET and redirect URI.',
-            );
-        }
-
-        const accessToken = data.access_token as string;
-        const refreshToken = (data.refresh_token as string) || null;
-        const accountId = (data.account_id as string) || null;
-        const expiresIn = Number(data.expires_in || 0);
-        const expiresAt =
-            expiresIn > 0 ? new Date(Date.now() + expiresIn * 1000) : null;
-
-        if (!accessToken) {
-            throw new BadRequestException('PagBank did not return access_token');
-        }
+        const userId = this.getConnectStateUserId(params.state);
+        const data = await this.requestConnectToken('/oauth2/token', {
+            grant_type: 'authorization_code',
+            code: params.code,
+            redirect_uri: this.getRedirectUri(),
+        });
+        const { accessToken, refreshToken, accountId, expiresAt } = this.readConnectTokens(data);
 
         await this.prisma.user.update({
             where: { id: userId },
@@ -212,53 +248,41 @@ export class PagBankService {
                 paymentProvider: 'PAGBANK',
                 pagbankAccessToken: accessToken,
                 pagbankRefreshToken: refreshToken,
-                pagbankAccountId: accountId || undefined,
+                pagbankAccountId: accountId,
                 pagbankTokenExpiresAt: expiresAt,
             },
         });
 
-        return { userId, accountId: accountId || undefined };
+        return { userId, accountId };
     }
 
     async refreshSellerToken(userId: string) {
         const user = await this.prisma.user.findUnique({
             where: { id: userId },
-            select: { pagbankRefreshToken: true },
+            select: { pagbankRefreshToken: true, pagbankAccountId: true },
         });
-        if (!user?.pagbankRefreshToken) {
-            throw new BadRequestException('No PagBank refresh token. Reconnect PagBank account.');
+        if (!user?.pagbankRefreshToken || !user.pagbankAccountId) {
+            throw new BadRequestException('No PagBank refresh token or account. Reconnect PagBank account.');
         }
 
-        const clientId = process.env.PAGBANK_CLIENT_ID;
-        const axios = (await import('axios')).default;
-        const { data } = await axios.post(
-            `${this.client.getApiBaseUrl()}/oauth2/refresh`,
-            { refresh_token: user.pagbankRefreshToken },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                    ...(clientId ? { X_CLIENT_ID: clientId } : {}),
-                    ...(process.env.PAGBANK_CLIENT_SECRET
-                        ? { X_CLIENT_SECRET: process.env.PAGBANK_CLIENT_SECRET }
-                        : {}),
-                },
-            },
-        );
-
-        const expiresIn = Number(data.expires_in || 0);
+        const data = await this.requestConnectToken('/oauth2/refresh', {
+            grant_type: 'refresh_token',
+            refresh_token: user.pagbankRefreshToken,
+        });
+        const tokens = this.readConnectTokens(data, user.pagbankAccountId);
+        if (!tokens.refreshToken) {
+            throw new BadRequestException('PagBank did not return a renewed refresh token');
+        }
         await this.prisma.user.update({
             where: { id: userId },
             data: {
-                pagbankAccessToken: data.access_token,
-                pagbankRefreshToken: data.refresh_token || user.pagbankRefreshToken,
-                pagbankTokenExpiresAt:
-                    expiresIn > 0 ? new Date(Date.now() + expiresIn * 1000) : null,
-                ...(data.account_id ? { pagbankAccountId: data.account_id } : {}),
+                pagbankAccessToken: tokens.accessToken,
+                pagbankRefreshToken: tokens.refreshToken,
+                pagbankTokenExpiresAt: tokens.expiresAt,
             },
         });
 
-        return data.access_token as string;
+        return tokens.accessToken;
     }
 
     /**
