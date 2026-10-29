@@ -11,6 +11,7 @@ import {
     ValidationPipe,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { KycGuard } from '../../common/guards/kyc.guard';
 import {
     ApiBody,
     ApiBadRequestResponse,
@@ -55,7 +56,7 @@ export class MarketplaceBattleBoostController {
     }
 
     @Post('marketplace-battles/:battleId/boosts')
-    @UseGuards(AuthGuard('jwt'))
+    @UseGuards(AuthGuard('jwt'), KycGuard)
     @ApiBearerAuth()
     @ApiOperation({ summary: 'Create marketplace battle boost intent (PENDING_PAYMENT)' })
     @ApiParam({ name: 'battleId', description: 'Marketplace battle id' })
@@ -81,7 +82,7 @@ export class MarketplaceBattleBoostController {
     }
 
     @Post('marketplace-battle-boosts/:boostId/payment')
-    @UseGuards(AuthGuard('jwt'))
+    @UseGuards(AuthGuard('jwt'), KycGuard)
     @ApiBearerAuth()
     @ApiOperation({ summary: 'Create or reuse payment session for pending marketplace battle boost' })
     @ApiParam({ name: 'boostId', description: 'Marketplace battle boost id' })

@@ -14,6 +14,7 @@ import {
 } from '@prisma/client';
 import Stripe from 'stripe';
 import { PrismaService } from '../../prisma/prisma.service';
+import { assertUserKyc } from '../../common/kyc.util';
 import { PagBankService } from '../../pagbank/pagbank.service';
 import { PaymentProviderResolver } from '../payment/payment-provider.resolver';
 import { CreateMarketplaceBattleBoostDto } from './dto/create-marketplace-battle-boost.dto';
@@ -131,6 +132,7 @@ export class MarketplaceBattleBoostService {
 
     async createBoostIntent(userId: string, battleId: string, dto: CreateMarketplaceBattleBoostDto) {
         const sellerId = this.assertUserId(userId);
+        await assertUserKyc(this.prisma, sellerId, 'PAYER');
         const now = new Date();
 
         return this.prisma.$transaction(

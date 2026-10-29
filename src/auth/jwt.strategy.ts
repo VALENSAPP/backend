@@ -48,6 +48,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       registrationType: payload.registrationType,
       profile: user.profile,
       sessionId: payload.sessionId,
+      kyc: Boolean(user.kyc),
     };
   }
 }

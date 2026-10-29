@@ -4,6 +4,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { Request } from 'express';
 import { CreateMarketplacePaymentDto } from './dto/create-marketplace-payment.dto';
 import { PaymentService } from './payment.service';
+import { KycGuard } from '../../common/guards/kyc.guard';
 
 @ApiTags('payment')
 @Controller('payment')
@@ -11,7 +12,7 @@ export class PaymentController {
     constructor(private readonly paymentService: PaymentService) { }
 
     @Post('create')
-    @UseGuards(AuthGuard('jwt'))
+    @UseGuards(AuthGuard('jwt'), KycGuard)
     @ApiBearerAuth()
     @ApiOperation({ summary: 'Create Stripe Checkout Session for My Closet cart checkout' })
     async createCheckoutSession(

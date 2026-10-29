@@ -8,6 +8,7 @@ import {
 } from '@prisma/client';
 import Stripe from 'stripe';
 import { PrismaService } from '../../prisma/prisma.service';
+import { assertUserKyc } from '../../common/kyc.util';
 import { PagBankService } from '../../pagbank/pagbank.service';
 import { OrderService } from '../order/order.service';
 import { CreateMarketplacePaymentDto } from './dto/create-marketplace-payment.dto';
@@ -138,6 +139,7 @@ export class PaymentService {
 
     async createCheckoutSessionForCart(userId: string, dto: CreateMarketplacePaymentDto) {
         if (!userId) throw new UnauthorizedException('User not authenticated');
+        await assertUserKyc(this.prisma, userId, 'PAYER');
 
         const user = await this.prisma.user.findUnique({
             where: { id: userId },
@@ -172,6 +174,11 @@ export class PaymentService {
 
         if (!cart || !cart.cartItems.length) {
             return { message: 'Cart is empty.' };
+        }
+
+        const sellerIds = [...new Set(cart.cartItems.map((item) => item.product?.userId).filter(Boolean))];
+        for (const sellerId of sellerIds) {
+            await assertUserKyc(this.prisma, sellerId, 'RECEIVER');
         }
 
         const now = new Date();

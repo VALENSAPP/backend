@@ -4,6 +4,7 @@ import { TokenPurchaseService } from './token-purchase.service';
 import { PurchaseTokensDto, TokenPurchaseResponseDto, BuyTokenDto, GetTokenPriceDto, SellTokenDto, GetVendorTokenAmountDto, GetTokenHistoryDto, GetPostDonationTotalDto, PostDonationTotalResponseDto, DonationResponseDto, MissionDonationDto } from './dto/purchase-tokens.dto';
 import { TokenService } from '../token/token.service';
 import { AuthGuard } from '@nestjs/passport';
+import { KycGuard } from '../common/guards/kyc.guard';
 import { Request } from 'express';
 
 /** Token purchase/sale/balance endpoints disabled per Valens requirements. Donation (Stripe) remains. */
@@ -50,7 +51,7 @@ export class TokenPurchaseController {
   }
 
   @Post('purchase')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Purchase tokens with USD payment',
@@ -353,7 +354,7 @@ export class TokenPurchaseController {
   }
 
   @Post('mission-donation')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiBody({ type: MissionDonationDto })
   @ApiOperation({

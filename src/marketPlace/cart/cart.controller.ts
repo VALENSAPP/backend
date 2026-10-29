@@ -15,6 +15,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { CartService } from './cart.service';
+import { KycGuard } from '../../common/guards/kyc.guard';
 import { AddCartItemDto } from './dto/add-cart-item.dto';
 import { UpdateCartItemShippingChoiceDto } from './dto/update-cart-item-shipping-choice.dto';
 import { UpdateCartItemQuantityDto } from './dto/update-cart-item-quantity.dto';
@@ -93,7 +94,7 @@ export class CartController {
     }
 
     @Post('checkout')
-    @UseGuards(AuthGuard('jwt'))
+    @UseGuards(AuthGuard('jwt'), KycGuard)
     @ApiBearerAuth()
     @ApiOperation({ summary: 'Final checkout inspection: validate cart and calculate final payable amount' })
     async inspectCheckout(@Req() req: Request, @Query('cartId') cartId?: string) {

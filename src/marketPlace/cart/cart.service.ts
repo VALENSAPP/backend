@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { CartItemShippingChoice, ShippingOptions } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { assertUserKyc } from '../../common/kyc.util';
 import { AddCartItemDto } from './dto/add-cart-item.dto';
 import { UpdateCartItemShippingChoiceDto } from './dto/update-cart-item-shipping-choice.dto';
 import { UpdateCartItemQuantityDto } from './dto/update-cart-item-quantity.dto';
@@ -388,6 +389,7 @@ export class CartService {
 
     async inspectCheckout(userId: string, cartId?: string) {
         await this.ensureUserExists(userId);
+        await assertUserKyc(this.prisma, userId, 'PAYER');
 
         const cart = await this.prisma.cart.findFirst({
             where: { userId, ...(cartId ? { id: cartId } : {}) },
@@ -413,6 +415,13 @@ export class CartService {
                 },
             },
         });
+
+        if (cart && cart.cartItems?.length) {
+            const sellerIds = [...new Set(cart.cartItems.map((item) => item.product?.userId).filter(Boolean))];
+            for (const sellerId of sellerIds) {
+                await assertUserKyc(this.prisma, sellerId, 'RECEIVER');
+            }
+        }
 
         if (!cart || !cart.cartItems.length) {
             throw new BadRequestException('Cart is empty');

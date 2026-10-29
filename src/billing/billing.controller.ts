@@ -19,6 +19,7 @@ import { CreateShopEbookPaymentDto } from './dto/create-shop-ebook-payment.dto';
 import { AddDigitalBadgeDto } from './dto/add-digital-badge.dto';
 import { VerifyUsdtTransactionDto } from './dto/verify-usdt-transaction.dto';
 import { WalletService } from '../wallet/wallet.service';
+import { KycGuard } from '../common/guards/kyc.guard';
 
 
 export class RequestWithdrawalDto {
@@ -52,7 +53,7 @@ export class BillingController {
   ) { }
 
   @Post('subscribe')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create Stripe Checkout Session for subscription (uses env vars)' })
   async createSubscription(@Req() req: Request) {
@@ -72,7 +73,7 @@ export class BillingController {
   }
 
   @Post('pay-following')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create Stripe Checkout Session for recurring or one-time creator following subscription' })
   @ApiBody({ type: PayFollowingDto })
@@ -120,7 +121,7 @@ export class BillingController {
   }
 
   @Post('send-tip')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create a tip checkout using the payer payment provider' })
   @ApiBody({ type: SendTipDto })
@@ -155,7 +156,7 @@ export class BillingController {
   }
 
   @Post('ebook-payment')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create Stripe Checkout Session for ebook payment (10% platform, 90% seller)' })
   @ApiBody({ type: CreateEbookPaymentDto })
@@ -177,7 +178,7 @@ export class BillingController {
   }
 
   @Post('shop-ebook-payment')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create Stripe Checkout Session for shop ebook payment (10% platform, 90% seller)' })
   @ApiBody({ type: CreateShopEbookPaymentDto })
@@ -372,7 +373,7 @@ export class BillingController {
   }
 
   @Post('request-withdrawal')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiBody({ type: RequestWithdrawalDto })
   @ApiOperation({
@@ -440,7 +441,7 @@ export class BillingController {
   }
 
   @Post('buy-hit')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create Stripe Checkout Session for buying hits' })
   @ApiBody({ type: BuyHitDto })
@@ -460,7 +461,7 @@ export class BillingController {
   }
 
   @Post('buy-hit-with-points')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Buy 1 hit using 1000 platform points (once per calendar month UTC)',
@@ -475,7 +476,7 @@ export class BillingController {
   }
 
   @Post('fans-page-subscription')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create Stripe Checkout Session for fans page subscription' })
   async fansPageSubscription(@Req() req: Request) {
@@ -485,7 +486,7 @@ export class BillingController {
   }
 
   @Post('buy-fan-subscription')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create Stripe Checkout Session for buying fan subscription' })
   @ApiBody({ type: BuyFanSubscriptionDto })
@@ -552,7 +553,7 @@ export class BillingController {
   }
 
   @Post('add-digital-badge')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Add a digital badge transaction (sender = current user from token)' })
   @ApiBody({ type: AddDigitalBadgeDto })
@@ -563,7 +564,7 @@ export class BillingController {
   }
 
   @Post('verify-usdt-transaction')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Verify USDT transaction on-chain and store it' })
   @ApiBody({ type: VerifyUsdtTransactionDto })

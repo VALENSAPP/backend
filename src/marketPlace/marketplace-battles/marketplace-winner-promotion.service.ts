@@ -15,6 +15,7 @@ import {
 } from '@prisma/client';
 import Stripe from 'stripe';
 import { PrismaService } from '../../prisma/prisma.service';
+import { assertUserKyc } from '../../common/kyc.util';
 import { PagBankService } from '../../pagbank/pagbank.service';
 import { PaymentProviderResolver } from '../payment/payment-provider.resolver';
 import { CreateMarketplaceWinnerPromotionDto } from './dto/create-marketplace-winner-promotion.dto';
@@ -138,6 +139,7 @@ export class MarketplaceWinnerPromotionService {
         dto: CreateMarketplaceWinnerPromotionDto,
     ) {
         const sellerId = this.assertUserId(userId);
+        await assertUserKyc(this.prisma, sellerId, 'PAYER');
         const normalizedMessage = dto.message?.trim() || null;
         const now = new Date();
 

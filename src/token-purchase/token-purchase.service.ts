@@ -1,4 +1,5 @@
-import { Injectable, BadRequestException, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, UnauthorizedException, HttpException } from '@nestjs/common';
+import { assertUserKyc } from '../common/kyc.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { PurchaseTokensDto, TokenPurchaseResponseDto, BuyTokenDto, SellTokenDto, DonationResponseDto, MissionDonationDto } from './dto/purchase-tokens.dto';
 import { TokenService } from '../token/token.service';
@@ -104,6 +105,10 @@ export class TokenPurchaseService {
     if (!user) {
       throw new BadRequestException('User not found');
     }
+    if (donorSource === 'internal') {
+      await assertUserKyc(this.prisma, userId, 'PAYER');
+    }
+    await assertUserKyc(this.prisma, dto.vendorId, 'RECEIVER');
 
     // Keep donation checks simple: allow only during active mission window.
     const missionPost = await this.getMissionPostOrThrow(dto.postId, dto.vendorId);
@@ -415,6 +420,7 @@ export class TokenPurchaseService {
       if (!user) {
         throw new BadRequestException('User not found');
       }
+      await assertUserKyc(this.prisma, userId, 'PAYER');
 
       // Validate vendor if provided
       if (dto.vendorId) {
@@ -425,6 +431,7 @@ export class TokenPurchaseService {
         if (!vendor) {
           throw new BadRequestException('Vendor not found');
         }
+        await assertUserKyc(this.prisma, dto.vendorId, 'RECEIVER');
       }
 
       let productName: string;
@@ -590,7 +597,7 @@ export class TokenPurchaseService {
 
     } catch (error) {
       this.logger.error('Error creating purchase:', error);
-      if (error instanceof BadRequestException) {
+      if (error instanceof HttpException) {
         throw error;
       }
       throw new BadRequestException('Failed to create purchase');
@@ -1072,7 +1079,7 @@ export class TokenPurchaseService {
       return await this.createMissionDonationSession(userId, dto, 'internal');
     } catch (error) {
       this.logger.error('Error creating mission donation:', error);
-      if (error instanceof BadRequestException) {
+      if (error instanceof HttpException) {
         throw error;
       }
       throw new BadRequestException('Failed to create mission donation');

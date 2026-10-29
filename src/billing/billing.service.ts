@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { assertUserKyc } from '../common/kyc.util';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { GetSubscribersQueryDto, SubscriberSortBy, SubscriberStatusFilter } from './dto/get-subscribers-query.dto';
 import { GetMySubscriptionsQueryDto, SubscriptionSortBy, SubscriptionStatusFilter } from './dto/get-my-subscriptions-query.dto';
@@ -83,6 +84,7 @@ export class BillingService {
   }
 
   async createCheckoutSession(userId: string) {
+    await assertUserKyc(this.prisma, userId, 'PAYER');
     const provider = await this.paymentProviderResolver.resolveProviderForUser(userId);
     if (provider === 'PAGBANK') {
       return this.createPagBankValensSubscriptionCheckout(userId);
@@ -478,6 +480,8 @@ export class BillingService {
     isAutoRenew: boolean = true,
   ) {
     await this.ensureUserExists(contentUserId);
+    await assertUserKyc(this.prisma, payerUserId, 'PAYER');
+    await assertUserKyc(this.prisma, contentUserId, 'RECEIVER');
 
     const payerProvider = await this.paymentProviderResolver.resolveProviderForUser(payerUserId);
     if (payerProvider === 'PAGBANK') {
@@ -1133,6 +1137,8 @@ export class BillingService {
     amount: number,
   ) {
     await this.ensureUserExists(receiverUserId);
+    await assertUserKyc(this.prisma, senderUserId, 'PAYER');
+    await assertUserKyc(this.prisma, receiverUserId, 'RECEIVER');
 
     const payerProvider = await this.paymentProviderResolver.resolveProviderForUser(senderUserId);
     if (payerProvider === 'PAGBANK') {
@@ -1298,7 +1304,8 @@ export class BillingService {
     amount: number,
   ) {
     await this.ensureUserExists(targetUserId);
-
+    await assertUserKyc(this.prisma, buyerUserId, 'PAYER');
+    await assertUserKyc(this.prisma, targetUserId, 'RECEIVER');
     const buyerProvider = await this.paymentProviderResolver.resolveProviderForUser(buyerUserId);
     if (buyerProvider === 'PAGBANK') {
       // continue below after validations, then branch before Stripe session
@@ -1487,6 +1494,7 @@ export class BillingService {
     ebookId: string,
     amount: number,
   ) {
+    await assertUserKyc(this.prisma, buyerUserId, 'PAYER');
     if (!closetId) throw new BadRequestException('closetId is required');
     if (!ebookId) throw new BadRequestException('ebookId is required');
     if (!amount || amount <= 0) throw new BadRequestException('Invalid amount');
@@ -1532,6 +1540,7 @@ export class BillingService {
     }
 
     await this.ensureUserExists(ebook.userId);
+    await assertUserKyc(this.prisma, ebook.userId, 'RECEIVER');
     const buyerProvider = await this.paymentProviderResolver.resolveProviderForUser(buyerUserId);
     const customerId = buyerProvider === 'STRIPE' ? await this.ensureStripeCustomer(buyerUserId) : null;
     const successUrl = process.env.STRIPE_SUCCESS_URL as string;
@@ -4048,6 +4057,7 @@ export class BillingService {
    * Pending (48h marketplace) balance cannot be withdrawn.
    */
   async requestWithdrawal(userId: string, amount: number) {
+    await assertUserKyc(this.prisma, userId, 'PAYER');
     if (!userId) throw new BadRequestException('User ID required');
     if (typeof amount !== 'number' || Number.isNaN(amount)) {
       throw new BadRequestException('Invalid withdrawal amount');
@@ -4467,6 +4477,7 @@ export class BillingService {
   }
 
   async buyHit(hitCount: number, userId: string) {
+    await assertUserKyc(this.prisma, userId, 'PAYER');
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new BadRequestException('User not found');
     if (!hitCount || hitCount <= 0) throw new BadRequestException('hitCount must be greater than 0');
@@ -4585,6 +4596,7 @@ export class BillingService {
   }
 
   async createFansPageSubscriptionCheckoutSession(userId: string) {
+    await assertUserKyc(this.prisma, userId, 'PAYER');
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new BadRequestException('User not found');
 
@@ -4773,6 +4785,8 @@ export class BillingService {
     if (!amount || amount <= 0) throw new BadRequestException('Amount must be greater than 0');
 
     await this.ensureUserExists(buyUserId);
+    await assertUserKyc(this.prisma, fanUserId, 'PAYER');
+    await assertUserKyc(this.prisma, buyUserId, 'RECEIVER');
     const fanProvider = await this.paymentProviderResolver.resolveProviderForUser(fanUserId);
     const buyUser = await this.prisma.user.findUnique({ where: { id: buyUserId } });
     if (!buyUser) throw new BadRequestException('Buy user not found');
@@ -4879,6 +4893,7 @@ export class BillingService {
   }
 
   async buyHitWithPlatformPoints(userId: string) {
+    await assertUserKyc(this.prisma, userId, 'PAYER');
     if (!userId) throw new BadRequestException('User not authenticated');
 
     const now = new Date();
@@ -5309,6 +5324,8 @@ export class BillingService {
   }
 
   async addDigitalBadge(senderId: string, dto: { receiverId: string; amount: number; txId: string }) {
+    await assertUserKyc(this.prisma, senderId, 'PAYER');
+    await assertUserKyc(this.prisma, dto.receiverId, 'RECEIVER');
     try {
       const digitalBadge = await this.prisma.digital_transaction.create({
         data: {
@@ -7054,6 +7071,8 @@ export class BillingService {
       const normalizedChain = dto.chain.toUpperCase();
       const txHash = dto.txHash.toLowerCase();
 
+      await assertUserKyc(this.prisma, authUserId, 'PAYER');
+      await assertUserKyc(this.prisma, dto.receiverId, 'RECEIVER');
       if (dto.senderId !== authUserId) {
         throw new BadRequestException('Sender ID mismatch');
       }
