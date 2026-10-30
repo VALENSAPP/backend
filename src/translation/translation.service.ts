@@ -341,7 +341,8 @@ export class TranslationService {
     targetLang: string,
     sourceLang: string = 'auto',
   ): Promise<{ translatedText: string; detectedSource?: string }> {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.geminiApiKey}`;
+    const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.geminiApiKey}`;
 
     const langNameMap: Record<string, string> = {
       pt: 'Portuguese (Português)',

@@ -239,7 +239,7 @@ Evaluate this user comment/reply.
 
 Criteria:
 1. isRelevant: Is the comment coherent text? (Reject gibberish spam, link dumps, bot scams).
-2. isSafe: Is the comment free from hate speech, harassment, severe toxicity, threats, and NSFW/scam links?
+2. isSafe: Is the comment free from hate speech, harassment, severe toxicity, threats, profanity, vulgarity, offensive swear words, and NSFW/scam links? If the comment contains profanity, vulgarity, insults, or swear words, set isSafe to false and include "profanity" in flags.
 
 Respond strictly in valid JSON format:
 {
@@ -334,7 +334,8 @@ ${images.length > 0 ? `Image URLs: ${images.slice(0, 3).join(', ')}` : ''}`;
     userPrompt: string,
     imageUrls: string[] = [],
   ): Promise<AIModerationResponse> {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.geminiApiKey}`;
+    const model = this.configService.get<string>('GEMINI_MODEL') || process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.geminiApiKey}`;
 
     const parts: any[] = [{ text: `${systemPrompt}\n\n${userPrompt}` }];
 
@@ -381,7 +382,8 @@ ${images.length > 0 ? `Image URLs: ${images.slice(0, 3).join(', ')}` : ''}`;
       throw new Error('Gemini API returned empty response content');
     }
 
-    return JSON.parse(candidateText) as AIModerationResponse;
+    const cleanedText = candidateText.trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
+    return JSON.parse(cleanedText) as AIModerationResponse;
   }
 
   /**
@@ -443,16 +445,17 @@ ${images.length > 0 ? `Image URLs: ${images.slice(0, 3).join(', ')}` : ''}`;
 
     const repeatedLetters = /(.)\1{9,}/.test(text);
     const explicitBadWords = ['kill yourself', 'free money click here', 'telegram bot scam', 'crypto hack tool'];
-    const hasBadPhrase = explicitBadWords.some((w) => text.includes(w));
+    const profanityRegex = /\b(fuck|fucking|fucker|fck|shit|bitch|asshole|bastard|cunt|dick|pussy|whore|slut|nigger|nigga|faggot)\b/i;
+    const hasBadPhrase = explicitBadWords.some((w) => text.includes(w)) || profanityRegex.test(text);
 
     if (repeatedLetters || hasBadPhrase) {
       return {
         status: 'PENDING_APPROVAL',
         reason: hasBadPhrase
-          ? 'Flagged by automated rule: prohibited terms detected'
+          ? 'Flagged by automated rule: prohibited or profane terms detected'
           : 'Flagged by automated rule: repetitive characters/potential spam',
         score: 0.9,
-        flaggedLabels: ['automated_rule_violation'],
+        flaggedLabels: ['profanity', 'automated_rule_violation'],
         moderatedBy: 'SYSTEM_RULES_LOCAL',
       };
     }
