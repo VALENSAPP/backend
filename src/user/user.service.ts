@@ -403,8 +403,9 @@ export class UserService {
         if (existingUserByEmail.userName !== normalizedUserName) {
           const userNameTaken = await this.prisma.user.findFirst({
             where: {
-              userName: normalizedUserName,
+              userName: { equals: normalizedUserName, mode: 'insensitive' },
               deletedAt: null,
+              verifyEmail: 1,
               id: { not: existingUserByEmail.id },
             },
             select: { id: true },
@@ -416,11 +417,16 @@ export class UserService {
 
         const passwordHash = await bcrypt.hash(data.password, 10);
         const existingUserCountry = normalizeCountryCode(data.country || data.location);
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
         const updatedUser = await this.prisma.user.update({
           where: { id: existingUserByEmail.id },
           data: {
             password: passwordHash,
             userName: normalizedUserName,
+            otp,
+            otpExpiresAt,
             ...(data.profile ? { profile: data.profile } : {}),
             ...(data.fcmToken ? { fcmToken: data.fcmToken } : {}),
             ...(existingUserCountry ? { country: existingUserCountry } : {}),
@@ -428,17 +434,30 @@ export class UserService {
           },
         });
 
+        // Resend OTP for verification upon re-registration
+        try {
+          await this.sendEmailOtp(normalizedEmail);
+        } catch (error) {
+          console.warn('Failed to send email OTP during re-registration:', error?.message || error);
+        }
+
         const meta = this.buildSessionMetaFromRegister(data);
         await this.upsertDeviceAccount(updatedUser.id, meta?.deviceId);
         const tokens = await this.issueTokensForUser(updatedUser, meta);
         return {
           ...tokens,
           user: updatedUser,
+          message: 'OTP sent successfully for email verification',
+          isEmailVerified: false,
         };
       }
 
       const existingUserName = await this.prisma.user.findFirst({
-        where: { userName: normalizedUserName, deletedAt: null },
+        where: {
+          userName: { equals: normalizedUserName, mode: 'insensitive' },
+          deletedAt: null,
+          verifyEmail: 1,
+        },
         select: { id: true },
       });
       if (existingUserName) {
@@ -562,7 +581,9 @@ export class UserService {
           if (existingUser.isDeleted === 1) {
             throw new BadRequestException('Account has been deleted. Please contact support to reactivate.');
           }
-          throw new BadRequestException('Email already registered');
+          if (existingUser.verifyEmail === 1) {
+            throw new BadRequestException('Email already registered');
+          }
         } else {
           // Soft-deleted user exists, we'll allow re-registration but need to handle carefully
           // For now, throw error to prevent conflicts
@@ -2028,12 +2049,13 @@ export class UserService {
   }
 
   // Check username availability and provide suggestions
-  async checkUserNameAvailability(userName: string, excludeUserId?: string) {
+  async checkUserNameAvailability(userName: string, excludeUserId?: string, email?: string) {
     if (!userName || userName.trim() === '') {
       throw new BadRequestException('Username is required');
     }
 
     const trimmedUserName = userName.trim();
+    const normalizedEmail = email ? email.trim().toLowerCase() : undefined;
 
     // Check if username already exists (case-insensitive, active users)
     const existingUser = await this.prisma.user.findFirst({
@@ -2042,7 +2064,7 @@ export class UserService {
         deletedAt: null,
         ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
       },
-      select: { id: true },
+      select: { id: true, email: true, verifyEmail: true },
     });
 
     if (!existingUser) {
@@ -2054,7 +2076,20 @@ export class UserService {
       };
     }
 
-    // If username exists, generate suggestions
+    // If an unverified user exists with this username:
+    // Allow re-registration if it belongs to the same email OR if email is not provided yet (unverified accounts do not permanently lock usernames)
+    if (existingUser.verifyEmail !== 1) {
+      if (!normalizedEmail || (existingUser.email && existingUser.email.toLowerCase() === normalizedEmail)) {
+        return {
+          isAvailable: true,
+          status: 'approved',
+          message: 'Username is available',
+          userName: trimmedUserName,
+        };
+      }
+    }
+
+    // If username exists and is verified (or belongs to another account), generate suggestions
     const suggestions = await this.generateUserNameSuggestions(trimmedUserName);
 
     return {
@@ -2071,9 +2106,9 @@ export class UserService {
     const suggestions: string[] = [];
     const baseNameLower = baseName.toLowerCase();
 
-    // Get existing usernames to avoid duplicates
+    // Get existing usernames to avoid duplicates (only consider verified active users)
     const existingUsers = await this.prisma.user.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, verifyEmail: 1 },
       select: { userName: true },
     });
     const existingNames = new Set(

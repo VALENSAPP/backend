@@ -753,7 +753,7 @@ export class UserController {
     if (!targetUserName) {
       throw new BadRequestException('Username is required');
     }
-    return this.userService.checkUserNameAvailability(targetUserName, dto.userId);
+    return this.userService.checkUserNameAvailability(targetUserName, dto.userId, dto.email);
   }
 
   @Get('check-username')
@@ -764,16 +764,18 @@ export class UserController {
   @ApiQuery({ name: 'userName', required: false, description: 'Username to check' })
   @ApiQuery({ name: 'username', required: false, description: 'Username to check (alias)' })
   @ApiQuery({ name: 'userId', required: false, description: 'Optional User ID to exclude' })
+  @ApiQuery({ name: 'email', required: false, description: 'Optional email to check unverified ownership' })
   async checkUserNameGet(
     @Query('userName') userName?: string,
     @Query('username') username?: string,
     @Query('userId') userId?: string,
+    @Query('email') email?: string,
   ) {
     const targetUserName = userName || username;
     if (!targetUserName) {
       throw new BadRequestException('Username is required');
     }
-    return this.userService.checkUserNameAvailability(targetUserName, userId);
+    return this.userService.checkUserNameAvailability(targetUserName, userId, email);
   }
 
   @Get('dashboard')

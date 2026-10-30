@@ -25,4 +25,12 @@ export class CheckUserNameDto {
   @IsOptional()
   @IsString()
   userId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Optional email to check if username belongs to the same unverified user for re-registration',
+    example: 'user@example.com',
+  })
+  @IsOptional()
+  @IsString()
+  email?: string;
 }
