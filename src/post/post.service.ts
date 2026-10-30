@@ -848,7 +848,7 @@ export class PostService {
 
         await this.syncPostHashtags(tx, post.id, processedData.hashtag);
 
-        if (moderation.status === 'PENDING_APPROVAL') {
+        if ((moderation.status as any) === 'PENDING_APPROVAL') {
           await (tx as any).moderationAuditLog.create({
             data: {
               contentType: 'POST',
@@ -3844,6 +3844,28 @@ export class PostService {
       postText: post.text || post.caption || undefined,
     });
 
+    if (moderation.status !== 'APPROVED') {
+      try {
+        await (this.prisma as any).moderationAuditLog.create({
+          data: {
+            contentType: 'COMMENT',
+            contentId: `rejected_${Date.now()}`,
+            authorId: userId,
+            aiVerdict: moderation.status,
+            aiReason: moderation.reason,
+            aiConfidence: moderation.score,
+            flaggedLabels: moderation.flaggedLabels || [],
+          },
+        });
+      } catch (err) {
+        console.error('Failed to log moderation audit:', err);
+      }
+
+      throw new BadRequestException(
+        moderation.reason || 'Your comment contains inappropriate or prohibited language.',
+      );
+    }
+
     const createdComment = await this.prisma.postComment.create({
       data: {
         postId,
@@ -3858,7 +3880,7 @@ export class PostService {
       } as any,
     });
 
-    if (moderation.status === 'PENDING_APPROVAL') {
+    if ((moderation.status as any) === 'PENDING_APPROVAL') {
       await (this.prisma as any).moderationAuditLog.create({
         data: {
           contentType: 'COMMENT',
@@ -3899,6 +3921,12 @@ export class PostService {
     const moderation = await this.moderationService.evaluateComment({
       comment: newComment,
     });
+
+    if (moderation.status !== 'APPROVED') {
+      throw new BadRequestException(
+        moderation.reason || 'Your edited comment contains inappropriate or prohibited language.',
+      );
+    }
 
     // Update the comment
     return this.prisma.postComment.update({
