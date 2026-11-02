@@ -23,6 +23,7 @@ import { KycService } from '../kyc/kyc.service';
 import { NotificationService } from '../notification/notification.service';
 import { normalizeLanguage, translateActivity } from '../notification/notification.translator';
 import { MailService } from '../common/mail/mail.service';
+import { ensureMonthlySubscriptionHits } from '../billing/subscription-hits.helper';
 import Stripe from 'stripe';
 import { SendPlatformPointsDto, GetPointTransfersDto, PointTransferFilterType } from './dto/send-points.dto';
 import { AdminBlockUserDto, AdminUnblockUserDto, GetBlockedUsersAdminDto } from './dto/admin-block-user.dto';
@@ -2209,6 +2210,9 @@ export class UserService {
         createdAt: { gte: startOfMonth, lt: startOfNextMonth },
       },
     });
+
+    // Ensure active yearly subscribers get renewed on the fly if their 30-day window expired
+    await ensureMonthlySubscriptionHits(this.prisma, userId, this.notificationService);
 
     // Get postHit
     const postHit = await this.prisma.postHit.findFirst({

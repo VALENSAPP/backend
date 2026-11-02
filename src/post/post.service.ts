@@ -17,6 +17,7 @@ import { start } from 'repl';
 import { endWith } from 'rxjs';
 import { NotificationService } from '../notification/notification.service';
 import { ModerationService } from '../moderation/moderation.service';
+import { ensureMonthlySubscriptionHits } from '../billing/subscription-hits.helper';
 import { format } from 'path';
 
 type PostFormat = 'image' | 'video' | 'reel' | 'ebook';
@@ -482,9 +483,17 @@ export class PostService {
           throw new BadRequestException('raiseAmount, start_time, and end_time are required for crowdfunding posts');
         }
 
-        const postHit = await this.prisma.postHit.findFirst({
+        let postHit = await this.prisma.postHit.findFirst({
           where: { userId },
         });
+
+        // Ensure active yearly subscribers get renewed on the fly if their 30-day window expired
+        const renewed = await ensureMonthlySubscriptionHits(this.prisma, userId, this.notificationService);
+        if (renewed) {
+          postHit = await this.prisma.postHit.findFirst({
+            where: { userId },
+          });
+        }
 
         const now = new Date();
         const hasValidSubHits = !!(

@@ -814,7 +814,10 @@ export class PagBankService {
                         currentPeriodEnd: periodEnd,
                     },
                 });
-                await this.grantSubscriptionHits(payment.userId, 5, periodEnd);
+                // Hits expire after 30 days like monthly, even for yearly subscriptions
+                const thirtyDaysLater = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+                const hitsExpiresAt = thirtyDaysLater < periodEnd ? thirtyDaysLater : periodEnd;
+                await this.grantSubscriptionHits(payment.userId, 5, hitsExpiresAt);
             }
 
             if (payment.forPayment === 'donation' || payment.forPayment === 'missionDonation') {

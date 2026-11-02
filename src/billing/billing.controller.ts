@@ -6,6 +6,7 @@ import { Request } from 'express';
 import { IsString, IsNotEmpty, IsNumber, Min, IsObject } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { BuyHitDto } from './dto/buy-hit.dto';
+import { SubscribeDto } from './dto/subscribe.dto';
 import { BuyFanSubscriptionDto } from './dto/buy-fan-subscription.dto';
 import { PayFollowingDto } from './dto/pay-following.dto';
 import { CancelPayFollowingSubscriptionDto } from './dto/cancel-pay-following-subscription.dto';
@@ -55,11 +56,30 @@ export class BillingController {
   @Post('subscribe')
   @UseGuards(AuthGuard('jwt'), KycGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create Stripe Checkout Session for subscription (uses env vars)' })
-  async createSubscription(@Req() req: Request) {
+  @ApiOperation({ summary: 'Create Stripe or PagBank Checkout Session for subscription (monthly or yearly)' })
+  @ApiBody({ type: SubscribeDto, required: false })
+  async createSubscription(
+    @Req() req: Request,
+    @Body(new ValidationPipe({ whitelist: true, transform: true })) dto?: SubscribeDto,
+  ) {
     const userId = (req.user as any).userId;
-    const session = await this.billingService.createCheckoutSession(userId);
-    return { url: session.url };
+    const interval = dto?.interval || 'monthly';
+    const session = await this.billingService.createCheckoutSession(userId, interval);
+    if ('provider' in session && session.provider === 'PAGBANK') {
+      return {
+        url: session.url,
+        provider: session.provider,
+        paymentId: session.referenceId,
+        orderId: session.orderId,
+        currency: (session.currency || 'BRL').toUpperCase(),
+        amountMinor: session.amountMinor,
+        qrCode: session.qrCode,
+        pixCopyPaste: session.pixCopyPaste,
+        expiresAt: session.expiresAt,
+        interval,
+      };
+    }
+    return { url: session.url, interval };
   }
 
   @Post('cancel')
