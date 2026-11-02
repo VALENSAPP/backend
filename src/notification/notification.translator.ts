@@ -2348,6 +2348,30 @@ export const PATTERN_RULES: PatternRule[] = [
       }),
     },
   },
+
+  // 55. Monthly Hits Renewed
+  {
+    titlePattern: /^Monthly Hits Renewed!?$/i,
+    bodyPattern: /^Your 5 monthly subscription hits for this cycle have been added\.\s*They are valid for 30 days\.?$/i,
+    translations: {
+      es: () => ({
+        title: '¡Hits Mensuales Renovados!',
+        body: 'Tus 5 hits mensuales de suscripción han sido añadidos. Válidos por 30 días.',
+      }),
+      fr: () => ({
+        title: 'Hits Mensuels Renouvelés !',
+        body: "Vos 5 hits mensuels d'abonnement ont été ajoutés. Ils sont valables 30 jours.",
+      }),
+      it: () => ({
+        title: 'Hit Mensili Rinnovati!',
+        body: 'I tuoi 5 hit mensili di abbonamento sono stati aggiunti. Sono validi per 30 giorni.',
+      }),
+      pt: () => ({
+        title: 'Hits Mensais Renovados!',
+        body: 'Seus 5 hits mensais de assinatura foram adicionados. Válidos por 30 dias.',
+      }),
+    },
+  },
 ];
 
 // ============================================================================
@@ -3512,6 +3536,11 @@ export function reconstructEnglishFromMetadata(
       return {
         title: 'Welcome to Valens!',
         body: 'Welcome to Valens! Explore features, connect with creators, and enjoy the community.',
+      };
+    case 'monthly_hits_renewed':
+      return {
+        title: 'Monthly Hits Renewed!',
+        body: 'Your 5 monthly subscription hits for this cycle have been added. They are valid for 30 days.',
       };
     default:
       return null;

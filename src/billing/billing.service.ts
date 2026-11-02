@@ -1,6 +1,7 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { assertUserKyc } from '../common/kyc.util';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { ensureMonthlySubscriptionHits } from './subscription-hits.helper';
 import { GetSubscribersQueryDto, SubscriberSortBy, SubscriberStatusFilter } from './dto/get-subscribers-query.dto';
 import { GetMySubscriptionsQueryDto, SubscriptionSortBy, SubscriptionStatusFilter } from './dto/get-my-subscriptions-query.dto';
 import { CancelPayFollowingSubscriptionDto } from './dto/cancel-pay-following-subscription.dto';
@@ -30,6 +31,7 @@ const MIN_WITHDRAWAL_MAJOR = 10;
 
 @Injectable()
 export class BillingService {
+  private readonly logger = new Logger(BillingService.name);
   private stripe: Stripe;
   private readonly usdtInterface = new ethers.Interface([
     'event Transfer(address indexed from, address indexed to, uint256 value)',
@@ -83,23 +85,34 @@ export class BillingService {
     return customer.id;
   }
 
-  async createCheckoutSession(userId: string) {
+  async createCheckoutSession(userId: string, interval: 'monthly' | 'yearly' = 'monthly') {
     await assertUserKyc(this.prisma, userId, 'PAYER');
     const provider = await this.paymentProviderResolver.resolveProviderForUser(userId);
     if (provider === 'PAGBANK') {
-      return this.createPagBankValensSubscriptionCheckout(userId);
+      return this.createPagBankValensSubscriptionCheckout(userId, interval);
     }
 
     const customerId = await this.ensureStripeCustomer(userId);
     const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { profile: true } });
     if (!user) throw new BadRequestException('User not found');
     const isCompany = (user.profile || '').toLowerCase() === 'company';
-    const priceId = (isCompany ? process.env.STRIPE_PRICE_ID_Business : process.env.STRIPE_PRICE_ID) as string;
+    const isYearly = interval === 'yearly';
+
+    const priceId = (
+      isYearly
+        ? (isCompany
+            ? (process.env.STRIPE_PRICE_ID_Business_YEARLY || process.env.STRIPE_PRICE_ID_YEARLY_Business || process.env.STRIPE_PRICE_ID_YEARLY)
+            : process.env.STRIPE_PRICE_ID_YEARLY)
+        : (isCompany ? process.env.STRIPE_PRICE_ID_Business : process.env.STRIPE_PRICE_ID)
+    ) as string;
+
     const successUrl = process.env.STRIPE_SUCCESS_URL as string;
     const cancelUrl = process.env.STRIPE_CANCEL_URL as string;
     if (!priceId || !successUrl || !cancelUrl) {
       throw new BadRequestException(
-        'Missing STRIPE_PRICE_ID/STRIPE_PRICE_ID_Business/STRIPE_SUCCESS_URL/STRIPE_CANCEL_URL env vars',
+        isYearly
+          ? 'Missing STRIPE_PRICE_ID_YEARLY (or STRIPE_PRICE_ID_Business_YEARLY)/STRIPE_SUCCESS_URL/STRIPE_CANCEL_URL env vars'
+          : 'Missing STRIPE_PRICE_ID/STRIPE_PRICE_ID_Business/STRIPE_SUCCESS_URL/STRIPE_CANCEL_URL env vars',
       );
     }
     const session = await this.stripe.checkout.sessions.create({
@@ -113,22 +126,45 @@ export class BillingService {
           quantity: 1,
         },
       ],
-      metadata: { userId },
+      metadata: { userId, interval },
     });
     return session;
   }
 
   /**
-  /**
-   * BR Valens plan: one-time PIX for ~1 month access (PagBank has no Stripe-style recurring Billing).
-   * Persona: R$ 14.90 (1490 centavos) default / PAGBANK_SUBSCRIPTION_AMOUNT_PERSONA_MINOR
-   * Business: R$ 29.90 (2990 centavos) default / PAGBANK_SUBSCRIPTION_AMOUNT_BUSINESS_MINOR
+   * BR Valens plan: one-time PIX for ~1 month or 1 year access (with 20% discount on yearly).
+   * Persona Monthly: R$ 14.90 (1490 centavos) default / PAGBANK_SUBSCRIPTION_AMOUNT_PERSONA_MINOR
+   * Business Monthly: R$ 29.90 (2990 centavos) default / PAGBANK_SUBSCRIPTION_AMOUNT_BUSINESS_MINOR
+   * Persona Yearly (~20% off): R$ 142.90 (14290 centavos) default / PAGBANK_SUBSCRIPTION_YEARLY_AMOUNT_PERSONA_MINOR
+   * Business Yearly (~20% off): R$ 286.90 (28690 centavos) default / PAGBANK_SUBSCRIPTION_YEARLY_AMOUNT_BUSINESS_MINOR
    */
-  private async resolveValensSubscriptionAmountMinor(userId: string): Promise<number> {
+  private async resolveValensSubscriptionAmountMinor(
+    userId: string,
+    interval: 'monthly' | 'yearly' = 'monthly',
+  ): Promise<number> {
     const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { profile: true } });
     const isCompany =
       (user?.profile || '').toLowerCase() === 'company' ||
       (user?.profile || '').toLowerCase() === 'business';
+
+    if (interval === 'yearly') {
+      if (isCompany) {
+        const businessYearly = Number(
+          process.env.PAGBANK_SUBSCRIPTION_YEARLY_AMOUNT_BUSINESS_MINOR ||
+          process.env.PAGBANK_SUBSCRIPTION_AMOUNT_BUSINESS_YEARLY_MINOR ||
+          28690,
+        );
+        if (businessYearly > 0) return Math.round(businessYearly);
+      } else {
+        const personaYearly = Number(
+          process.env.PAGBANK_SUBSCRIPTION_YEARLY_AMOUNT_PERSONA_MINOR ||
+          process.env.PAGBANK_SUBSCRIPTION_AMOUNT_PERSONA_YEARLY_MINOR ||
+          14290,
+        );
+        if (personaYearly > 0) return Math.round(personaYearly);
+      }
+      return isCompany ? 28690 : 14290;
+    }
 
     if (isCompany) {
       const businessAmount = Number(
@@ -159,17 +195,37 @@ export class BillingService {
     return isCompany ? 2990 : 1490;
   }
 
-  private async createPagBankValensSubscriptionCheckout(userId: string) {
+  private async createPagBankValensSubscriptionCheckout(
+    userId: string,
+    interval: 'monthly' | 'yearly' = 'monthly',
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, displayName: true, userName: true },
+      select: {
+        id: true,
+        email: true,
+        displayName: true,
+        userName: true,
+        subscriptionStatus: true,
+        currentPeriodEnd: true,
+      },
     });
     if (!user) throw new BadRequestException('User not found');
 
-    const amountMinor = await this.resolveValensSubscriptionAmountMinor(userId);
-    const periodStart = new Date();
-    const periodEnd = new Date(periodStart);
-    periodEnd.setMonth(periodEnd.getMonth() + 1);
+    const amountMinor = await this.resolveValensSubscriptionAmountMinor(userId, interval);
+    const now = new Date();
+    const baseDate = user.currentPeriodEnd && user.currentPeriodEnd > now ? new Date(user.currentPeriodEnd) : now;
+    const periodStart = now;
+    const periodEnd = new Date(baseDate);
+    if (interval === 'yearly') {
+      periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+    } else {
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
+    }
+
+    const description = interval === 'yearly'
+      ? 'Valens Subscription (Plano Anual - 20% OFF)'
+      : 'Valens Subscription';
 
     const payment = await this.prisma.payment.create({
       data: {
@@ -179,6 +235,7 @@ export class BillingService {
         currency: 'BRL',
         status: 'pending',
         forPayment: 'subscription',
+        stripeInvoiceId: interval === 'yearly' ? 'interval:yearly' : 'interval:monthly',
         periodStart,
         periodEnd,
       },
@@ -187,7 +244,7 @@ export class BillingService {
     const checkout = await this.pagBankService.createPixCheckout({
       referenceId: payment.id,
       amountMinor,
-      description: 'Valens Subscription',
+      description,
       customerEmail: user.email || undefined,
       customerName: user.displayName || user.userName || undefined,
     });
@@ -200,6 +257,7 @@ export class BillingService {
     return {
       id: checkout.orderId,
       url: checkout.checkoutUrl,
+      interval,
       ...checkout,
     };
   }
@@ -1767,6 +1825,12 @@ export class BillingService {
       isCancel = true;
     }
 
+    const isYearly =
+      latestPayment?.stripeInvoiceId === 'interval:yearly' ||
+      (latestPayment?.periodStart &&
+        latestPayment?.periodEnd &&
+        latestPayment.periodEnd.getTime() - latestPayment.periodStart.getTime() > 45 * 24 * 60 * 60 * 1000);
+
     return {
       status,
       forPayment,
@@ -1774,6 +1838,7 @@ export class BillingService {
       end: user.subscriptionEnd,
       currentPeriodEnd: user.currentPeriodEnd,
       isCancel,
+      interval: isYearly ? 'yearly' : 'monthly',
     };
   }
 
@@ -1981,12 +2046,11 @@ export class BillingService {
       },
     });
 
-    // Grant 5 subscription hits valid for 30 days (until periodEnd)
-    const subExpiresAt = periodEnd || (() => {
-      const d = new Date(periodStart || new Date());
-      d.setMonth(d.getMonth() + 1);
-      return d;
-    })();
+    // Grant 5 subscription hits valid for 30 days (capped at 30 days or periodEnd)
+    const thirtyDaysLater = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const subExpiresAt = periodEnd
+      ? (thirtyDaysLater < periodEnd ? thirtyDaysLater : periodEnd)
+      : thirtyDaysLater;
 
     const postHit = await this.prisma.postHit.findFirst({
       where: { userId: user.id },
@@ -7158,6 +7222,40 @@ export class BillingService {
       }
       const message = error instanceof Error ? error.message : 'Failed to verify transaction';
       throw new BadRequestException(message);
+    }
+  }
+
+  /**
+   * Refresh monthly 5 hits for a specific user if they are an active yearly subscriber
+   * whose 30-day window has expired.
+   */
+  async ensureMonthlySubscriptionHits(userId: string): Promise<boolean> {
+    return ensureMonthlySubscriptionHits(this.prisma, userId, this.notificationService);
+  }
+
+  /**
+   * Hourly cron job that scans all active yearly subscribers and refreshes their
+   * 5 monthly subscription hits once their previous 30-day window has expired.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async refreshMonthlySubscriptionHitsCron() {
+    try {
+      const now = new Date();
+      const activeUsers = await this.prisma.user.findMany({
+        where: {
+          subscriptionStatus: 'ACTIVE',
+          currentPeriodEnd: { gt: now },
+          isDeleted: 0,
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+
+      for (const u of activeUsers) {
+        await ensureMonthlySubscriptionHits(this.prisma, u.id, this.notificationService);
+      }
+    } catch (err: any) {
+      this.logger.error(`[CRON] Failed to refresh monthly subscription hits: ${err?.message || err}`);
     }
   }
 }

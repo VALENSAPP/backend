@@ -11,7 +11,6 @@ config/service-account-key.json
 userImage
 images
 config.bat
-.env
 
 /src/deep-link/deep-link.controller.ts
 branch_structure.json
