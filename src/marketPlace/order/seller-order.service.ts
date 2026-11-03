@@ -187,79 +187,151 @@ export class SellerOrderService {
                     ? { items: { some: { selectedShippingChoice: CartItemShippingChoice.ship_items } } }
                     : {};
 
-        const where: Prisma.OrderWhereInput = {
-            sellerId,
-            ...(query.status ? { orderStatus: query.status } : {}),
-            ...(query.cancellationStatus ? { cancellationStatus: query.cancellationStatus } : {}),
-            ...shippingTypeWhere,
-        };
-
-        const [total, orders] = await this.prisma.$transaction([
-            this.prisma.order.count({ where }),
-            this.prisma.order.findMany({
-                where,
-                skip,
-                take: limit,
-                orderBy: { createdAt: 'desc' },
+        const selectFields = {
+            id: true,
+            orderNumber: true,
+            total: true,
+            orderStatus: true,
+            paymentStatus: true,
+            cancellationStatus: true,
+            cancellationReason: true,
+            cancellationDeclineReason: true,
+            cancellationRequestedAt: true,
+            cancellationRespondedAt: true,
+            refundAmount: true,
+            refundStatus: true,
+            isViewedBySeller: true,
+            sellerViewedAt: true,
+            createdAt: true,
+            buyer: {
                 select: {
                     id: true,
-                    orderNumber: true,
-                    total: true,
-                    orderStatus: true,
-                    paymentStatus: true,
-                    cancellationStatus: true,
-                    cancellationReason: true,
-                    cancellationDeclineReason: true,
-                    cancellationRequestedAt: true,
-                    cancellationRespondedAt: true,
-                    refundAmount: true,
-                    refundStatus: true,
-                    isViewedBySeller: true,
-                    sellerViewedAt: true,
-                    createdAt: true,
-                    buyer: {
+                    userName: true,
+                    displayName: true,
+                },
+            },
+            items: {
+                select: {
+                    id: true,
+                    productId: true,
+                    productName: true,
+                    productImage: true,
+                    quantity: true,
+                    price: true,
+                    subtotal: true,
+                    selectedShippingChoice: true,
+                    selectedShippingFee: true,
+                    pickupAddress: true,
+                    pickupAvailableHours: true,
+                    product: {
                         select: {
                             id: true,
-                            userName: true,
-                            displayName: true,
-                        },
-                    },
-                    items: {
-                        select: {
-                            id: true,
-                            productId: true,
-                            productName: true,
-                            productImage: true,
-                            quantity: true,
-                            price: true,
-                            subtotal: true,
-                            selectedShippingChoice: true,
-                            selectedShippingFee: true,
+                            name: true,
+                            images: true,
+                            category: true,
+                            brand: true,
+                            condition: true,
+                            isActive: true,
+                            isDeleted: true,
+                            shippingOption: true,
+                            shippingFee: true,
+                            estimateShippingTime: true,
+                            pickUpCity: true,
                             pickupAddress: true,
                             pickupAvailableHours: true,
-                            product: {
-                                select: {
-                                    id: true,
-                                    name: true,
-                                    images: true,
-                                    category: true,
-                                    brand: true,
-                                    condition: true,
-                                    isActive: true,
-                                    isDeleted: true,
-                                    shippingOption: true,
-                                    shippingFee: true,
-                                    estimateShippingTime: true,
-                                    pickUpCity: true,
-                                    pickupAddress: true,
-                                    pickupAvailableHours: true,
-                                },
-                            },
                         },
                     },
                 },
-            }),
-        ]);
+            },
+        };
+
+        const isCancelledQuery = query.status === OrderStatus.CANCELLED;
+        let total = 0;
+        let orders: any[] = [];
+
+        if (isCancelledQuery) {
+            // Include both pending cancellation requests and already-cancelled orders in Cancel tab
+            const pendingRequestWhere: Prisma.OrderWhereInput = {
+                sellerId,
+                cancellationStatus: CancellationStatus.REQUESTED,
+                ...shippingTypeWhere,
+            };
+
+            const confirmedCancelledWhere: Prisma.OrderWhereInput = {
+                sellerId,
+                orderStatus: OrderStatus.CANCELLED,
+                cancellationStatus: { not: CancellationStatus.REQUESTED },
+                ...shippingTypeWhere,
+            };
+
+            const [pendingCount, cancelledCount] = await Promise.all([
+                this.prisma.order.count({ where: pendingRequestWhere }),
+                this.prisma.order.count({ where: confirmedCancelledWhere }),
+            ]);
+
+            total = pendingCount + cancelledCount;
+
+            // Prioritize pending cancellation requests at the top of the "Cancel" tab
+            if (skip < pendingCount) {
+                const pendingOrders = await this.prisma.order.findMany({
+                    where: pendingRequestWhere,
+                    skip,
+                    take: limit,
+                    orderBy: { createdAt: 'desc' },
+                    select: selectFields,
+                });
+                orders.push(...pendingOrders);
+
+                const remainingLimit = limit - pendingOrders.length;
+                if (remainingLimit > 0) {
+                    const cancelledOrders = await this.prisma.order.findMany({
+                        where: confirmedCancelledWhere,
+                        skip: 0,
+                        take: remainingLimit,
+                        orderBy: { createdAt: 'desc' },
+                        select: selectFields,
+                    });
+                    orders.push(...cancelledOrders);
+                }
+            } else {
+                const adjustedSkip = skip - pendingCount;
+                orders = await this.prisma.order.findMany({
+                    where: confirmedCancelledWhere,
+                    skip: adjustedSkip,
+                    take: limit,
+                    orderBy: { createdAt: 'desc' },
+                    select: selectFields,
+                });
+            }
+        } else {
+            const where: Prisma.OrderWhereInput = {
+                sellerId,
+                ...(query.status
+                    ? {
+                        orderStatus: query.status,
+                        ...(query.cancellationStatus
+                            ? {}
+                            : { cancellationStatus: { not: CancellationStatus.REQUESTED } }),
+                    }
+                    : {}),
+                ...(query.cancellationStatus ? { cancellationStatus: query.cancellationStatus } : {}),
+                ...shippingTypeWhere,
+            };
+
+            const [countResult, ordersResult] = await this.prisma.$transaction([
+                this.prisma.order.count({ where }),
+                this.prisma.order.findMany({
+                    where,
+                    skip,
+                    take: limit,
+                    orderBy: { createdAt: 'desc' },
+                    select: selectFields,
+                }),
+            ]);
+
+            total = countResult;
+            orders = ordersResult;
+        }
 
         return {
             total,
@@ -269,7 +341,7 @@ export class SellerOrderService {
             data: orders.map((order) => {
                 const isLocalPickupOrder =
                     order.items.length > 0 &&
-                    order.items.every((item) => item.selectedShippingChoice === CartItemShippingChoice.local_pick);
+                    order.items.every((item: any) => item.selectedShippingChoice === CartItemShippingChoice.local_pick);
 
                 return {
                     id: order.id,
@@ -289,11 +361,14 @@ export class SellerOrderService {
                     cancellationDeclineReason: order.cancellationDeclineReason,
                     cancellationRequestedAt: order.cancellationRequestedAt,
                     cancellationRespondedAt: order.cancellationRespondedAt,
+                    isCancellationPending: order.cancellationStatus === CancellationStatus.REQUESTED,
+                    isCancellationApproved: order.cancellationStatus === CancellationStatus.APPROVED,
+                    canSellerApproveCancellation: order.cancellationStatus === CancellationStatus.REQUESTED,
                     refundAmount: order.refundAmount,
                     refundStatus: order.refundStatus,
                     createdAt: order.createdAt,
                     totalItemCount: order.items.length,
-                    items: order.items.map((item) => ({
+                    items: order.items.map((item: any) => ({
                         id: item.id,
                         productId: item.productId,
                         productName: item.productName,
