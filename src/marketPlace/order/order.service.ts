@@ -303,8 +303,9 @@ export class OrderService {
                     const isStripe =
                         (seller?.paymentProvider || '').toUpperCase() === 'STRIPE' ||
                         (seller?.country && normalizeCountryCode(seller.country) !== 'BR');
-                    const provider: 'PAGBANK' | 'STRIPE' = isStripe ? 'STRIPE' : 'PAGBANK';
-                    const targetCurrency = provider === 'PAGBANK' ? 'brl' : 'usd';
+                    // const provider: 'PAGBANK' | 'STRIPE' = isStripe ? 'STRIPE' : 'PAGBANK';
+                    const provider: 'PAGBANK' | 'STRIPE' = 'STRIPE';
+                    const targetCurrency = ((provider as string) === 'PAGBANK') ? 'brl' : 'usd';
                     const sourceCurrency = (paymentRecord.currency || targetCurrency).toLowerCase();
 
                     let finalSellerAmountMinor = Math.round(sellerAmountMinor);

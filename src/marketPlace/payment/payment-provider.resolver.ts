@@ -24,10 +24,11 @@ export class PaymentProviderResolver {
 
         if (!user) return 'STRIPE';
 
-        const stored = (user.paymentProvider || '').toUpperCase();
-        if (stored === 'PAGBANK' || stored === 'STRIPE') {
-            return stored as PaymentProvider;
-        }
+        // PagBank commented out: all users use STRIPE worldwide
+        // const stored = (user.paymentProvider || '').toUpperCase();
+        // if (stored === 'PAGBANK' || stored === 'STRIPE') {
+        //     return stored as PaymentProvider;
+        // }
 
         const fromCountry = resolvePaymentProviderFromCountry(user.country);
         return fromCountry || 'STRIPE';
@@ -47,10 +48,11 @@ export class PaymentProviderResolver {
         });
         if (!user) return 'STRIPE';
 
-        const stored = (user.paymentProvider || '').toUpperCase();
-        if (stored === 'PAGBANK' || stored === 'STRIPE') {
-            return stored as PaymentProvider;
-        }
+        // PagBank commented out: all users use STRIPE worldwide
+        // const stored = (user.paymentProvider || '').toUpperCase();
+        // if (stored === 'PAGBANK' || stored === 'STRIPE') {
+        //     return stored as PaymentProvider;
+        // }
 
         const providerFromCountry = resolvePaymentProviderFromCountry(user.country) || 'STRIPE';
         await this.prisma.user.update({

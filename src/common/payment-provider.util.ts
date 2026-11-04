@@ -22,6 +22,9 @@ export function normalizeCountryCode(input?: string | null): string | null {
 
     // Exact / short codes
     if (BRAZIL_ALIASES.has(lower)) return 'BR';
+    if (lower === 'usa' || lower === 'united states' || lower === 'united states of america') return 'US';
+    if (lower === 'uk' || lower === 'united kingdom' || lower === 'great britain') return 'GB';
+    if (lower === 'canada') return 'CA';
     if (/^[a-z]{2}$/i.test(raw)) return raw.toUpperCase();
     if (/^[a-z]{3}$/i.test(raw)) return raw.toUpperCase();
 
@@ -43,7 +46,9 @@ export function normalizeCountryCode(input?: string | null): string | null {
 
 export function resolvePaymentProviderFromCountry(country?: string | null): PaymentProvider {
     const code = normalizeCountryCode(country);
-    return code === 'BR' ? 'PAGBANK' : 'STRIPE';
+    // PagBank commented out: Stripe is now used for Brazil and worldwide
+    // return code === 'BR' ? 'PAGBANK' : 'STRIPE';
+    return 'STRIPE';
 }
 
 /**

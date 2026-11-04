@@ -20,6 +20,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { PagBankService } from '../pagbank/pagbank.service';
 import { PaymentProviderResolver } from '../marketPlace/payment/payment-provider.resolver';
 import { CurrencyConverterService } from '../common/currency/currency-converter.service';
+import { normalizeCountryCode } from '../common/payment-provider.util';
 import Stripe from 'stripe';
 import { ethers } from 'ethers';
 import { v4 as uuidv4 } from 'uuid';

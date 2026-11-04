@@ -182,8 +182,11 @@ export class OrderPayoutService {
             select: { paymentProvider: true },
         });
         const provider =
-            providerFromPayment ||
-            ((seller?.paymentProvider || '').toUpperCase() === 'PAGBANK' ? 'PAGBANK' : 'STRIPE');
+            // providerFromPayment ||
+            // ((seller?.paymentProvider || '').toUpperCase() === 'PAGBANK' ? 'PAGBANK' : 'STRIPE');
+            'STRIPE';
+        const _unused = providerFromPayment;
+            // ((seller?.paymentProvider || '').toUpperCase() === 'PAGBANK' ? 'PAGBANK' : 'STRIPE');
 
         try {
             const walletResult = await this.walletService.movePendingToAvailable({

@@ -9,6 +9,7 @@ import {
 import Stripe from 'stripe';
 import { PrismaService } from '../../prisma/prisma.service';
 import { assertUserKyc } from '../../common/kyc.util';
+import { normalizeCountryCode } from '../../common/payment-provider.util';
 import { PagBankService } from '../../pagbank/pagbank.service';
 import { OrderService } from '../order/order.service';
 import { CreateMarketplacePaymentDto } from './dto/create-marketplace-payment.dto';

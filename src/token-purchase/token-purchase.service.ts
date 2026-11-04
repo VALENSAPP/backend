@@ -124,15 +124,18 @@ export class TokenPurchaseService {
     await this.ensureVendorExists(dto.vendorId);
 
     const payerProvider = await this.paymentProviderResolver.resolveProviderForUser(userId);
-    const isPagBank = payerProvider === 'PAGBANK';
+    // const isPagBank = payerProvider === 'PAGBANK';
+    const isPagBank = false;
 
     const vendorUser = await this.prisma.user.findUnique({
       where: { id: dto.vendorId },
       select: { paymentProvider: true, country: true },
     });
-    const vendorIsPagBank =
+    // const vendorIsPagBank =
+    const vendorIsPagBank = false; // PagBank commented out
+    const _unusedVendorIsPagBank = false && (
       (vendorUser?.paymentProvider || '').toUpperCase() === 'PAGBANK' ||
-      (vendorUser?.country && normalizeCountryCode(vendorUser.country) === 'BR');
+      (vendorUser?.country && normalizeCountryCode(vendorUser?.country) === 'BR'));
 
     const vendorCurrency = vendorIsPagBank ? 'BRL' : 'USD';
     const payerCurrency = isPagBank ? 'BRL' : 'USD';
@@ -965,8 +968,9 @@ export class TokenPurchaseService {
           const isPagBank =
             (seller?.paymentProvider || '').toUpperCase() === 'PAGBANK' ||
             (seller?.country && normalizeCountryCode(seller.country) === 'BR');
-          const provider: 'PAGBANK' | 'STRIPE' = isPagBank ? 'PAGBANK' : 'STRIPE';
-          const targetCurrency = provider === 'PAGBANK' ? 'brl' : 'usd';
+          // const provider: 'PAGBANK' | 'STRIPE' = isPagBank ? 'PAGBANK' : 'STRIPE';
+          const provider: 'PAGBANK' | 'STRIPE' = 'STRIPE';
+          const targetCurrency = ((provider as string) === 'PAGBANK') ? 'brl' : 'usd';
 
           const finalMinor =
             targetCurrency === 'brl'
