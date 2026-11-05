@@ -69,12 +69,6 @@ export class BillingService {
 
   async ensureStripeCustomer(userId: string) {
     if (!userId) throw new BadRequestException('User ID required');
-    const provider = await this.paymentProviderResolver.resolveProviderForUser(userId);
-    if (provider === 'PAGBANK') {
-      throw new BadRequestException(
-        'Brazil users use PagBank only. Stripe checkout is not available for this account.',
-      );
-    }
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new BadRequestException('User not found');
     if (user.stripeCustomerId) return user.stripeCustomerId;
@@ -94,18 +88,35 @@ export class BillingService {
     }
 
     const customerId = await this.ensureStripeCustomer(userId);
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { profile: true } });
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { profile: true, country: true } });
     if (!user) throw new BadRequestException('User not found');
     const isCompany = (user.profile || '').toLowerCase() === 'company';
     const isYearly = interval === 'yearly';
+    const isBrazil = isBrazilUser(user.country);
 
-    const priceId = (
-      isYearly
-        ? (isCompany
-            ? (process.env.STRIPE_PRICE_ID_Business_YEARLY || process.env.STRIPE_PRICE_ID_YEARLY_Business || process.env.STRIPE_PRICE_ID_YEARLY)
-            : process.env.STRIPE_PRICE_ID_YEARLY)
-        : (isCompany ? process.env.STRIPE_PRICE_ID_Business : process.env.STRIPE_PRICE_ID)
-    ) as string;
+    let priceId: string | undefined;
+
+    if (isBrazil) {
+      if (isYearly) {
+        priceId = isCompany
+          ? (process.env.STRIPE_PRICE_ID_BUSINESS_YEARLY_BRL || process.env.STRIPE_PRICE_ID_YEARLY_BRL)
+          : process.env.STRIPE_PRICE_ID_YEARLY_BRL;
+      } else {
+        priceId = isCompany
+          ? process.env.STRIPE_PRICE_ID_BUSINESS_BRL
+          : process.env.STRIPE_PRICE_ID_BRL;
+      }
+    }
+
+    if (!priceId) {
+      priceId = (
+        isYearly
+          ? (isCompany
+              ? (process.env.STRIPE_PRICE_ID_Business_YEARLY || process.env.STRIPE_PRICE_ID_YEARLY_Business || process.env.STRIPE_PRICE_ID_YEARLY)
+              : process.env.STRIPE_PRICE_ID_YEARLY)
+          : (isCompany ? process.env.STRIPE_PRICE_ID_Business : process.env.STRIPE_PRICE_ID)
+      ) as string;
+    }
 
     const successUrl = process.env.STRIPE_SUCCESS_URL as string;
     const cancelUrl = process.env.STRIPE_CANCEL_URL as string;
@@ -4621,16 +4632,19 @@ export class BillingService {
       return { sessionId: checkout.orderId, url: checkout.checkoutUrl, ...checkout };
     }
 
-    if (!amount || amount <= 0) throw new BadRequestException('amount must be greater than 0');
-    // const amountMinor = Math.round(amount * 100);
-    const amountMinor = amount;
+    const isBrazil = isBrazilUser(user.country);
+    const hitPriceBrlMinor = Number(process.env.STRIPE_HIT_PRICE_BRL_MINOR || 499);
+    const amountMinor = isBrazil ? Math.round(hitCount * hitPriceBrlMinor) : amount;
+    const currency = isBrazil ? 'brl' : 'usd';
+
+    if (!amountMinor || amountMinor <= 0) throw new BadRequestException('amount must be greater than 0');
 
     const session = await this.stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [
         {
           price_data: {
-            currency: 'usd',
+            currency,
             product_data: {
               name: `Buy ${hitCount} Hits`,
               description: `Purchase ${hitCount} additional hits for posting`,
@@ -4655,7 +4669,7 @@ export class BillingService {
       data: {
         userId: userId,
         amount: amountMinor,
-        currency: 'USD',
+        currency: currency.toUpperCase(),
         status: 'pending',
         forPayment: 'buyHit',
         stripePaymentIntentId: (session.payment_intent as string) || session.id,
