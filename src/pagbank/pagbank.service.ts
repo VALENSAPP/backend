@@ -613,11 +613,12 @@ export class PagBankService {
             where: { id: params.userId },
             select: { paymentProvider: true, country: true },
         });
+        const isBrazil = receiver?.country ? normalizeCountryCode(receiver.country) === 'BR' : false;
         const isStripe =
             (receiver?.paymentProvider || '').toUpperCase() === 'STRIPE' ||
-            (receiver?.country && normalizeCountryCode(receiver.country) !== 'BR');
+            !isBrazil;
         const provider: 'PAGBANK' | 'STRIPE' = isStripe ? 'STRIPE' : 'PAGBANK';
-        const targetCurrency = provider === 'PAGBANK' ? 'brl' : 'usd';
+        const targetCurrency = isBrazil ? 'brl' : 'usd';
 
         let finalMinor = Math.round(params.amountMinorBrl);
         if (targetCurrency === 'usd') {
