@@ -9,7 +9,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { PagBankService } from '../pagbank/pagbank.service';
 import { PaymentProviderResolver } from '../marketPlace/payment/payment-provider.resolver';
 import { CurrencyConverterService } from '../common/currency/currency-converter.service';
-import { normalizeCountryCode } from '../common/payment-provider.util';
+import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser, normalizeCountryCode } from '../common/payment-provider.util';
 import Stripe from 'stripe';
 import { ethers } from 'ethers';
 import { timingSafeEqual } from 'crypto';
@@ -99,7 +99,7 @@ export class TokenPurchaseService {
     // Validate payer exists
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, displayName: true, userName: true },
+      select: { id: true, email: true, displayName: true, userName: true, country: true },
     });
 
     if (!user) {
@@ -124,21 +124,17 @@ export class TokenPurchaseService {
     await this.ensureVendorExists(dto.vendorId);
 
     const payerProvider = await this.paymentProviderResolver.resolveProviderForUser(userId);
-    // const isPagBank = payerProvider === 'PAGBANK';
-    const isPagBank = false;
+    const isPayerBrazil = isBrazilUser(user.country);
+    const isPagBank = payerProvider === 'PAGBANK';
 
     const vendorUser = await this.prisma.user.findUnique({
       where: { id: dto.vendorId },
       select: { paymentProvider: true, country: true },
     });
-    // const vendorIsPagBank =
-    const vendorIsPagBank = false; // PagBank commented out
-    const _unusedVendorIsPagBank = false && (
-      (vendorUser?.paymentProvider || '').toUpperCase() === 'PAGBANK' ||
-      (vendorUser?.country && normalizeCountryCode(vendorUser?.country) === 'BR'));
+    const isVendorBrazil = isBrazilUser(vendorUser?.country);
 
-    const vendorCurrency = vendorIsPagBank ? 'BRL' : 'USD';
-    const payerCurrency = isPagBank ? 'BRL' : 'USD';
+    const vendorCurrency = isVendorBrazil ? 'BRL' : 'USD';
+    const payerCurrency = isPayerBrazil ? 'BRL' : 'USD';
 
     // Calculate donation in vendor currency for goal comparison & donationData
     let amountInVendorCurrency = dto.amount;
@@ -254,7 +250,7 @@ export class TokenPurchaseService {
       line_items: [
         {
           price_data: {
-            currency: 'usd',
+            currency: payerCurrency.toLowerCase(),
             product_data: {
               name: productName,
               description: productDescription,
@@ -294,7 +290,7 @@ export class TokenPurchaseService {
       amount: receiverAmountCents,
       platformFee: applicationFeeCents,
       totalAmount: amountCents,
-      currency: 'usd',
+      currency: payerCurrency.toLowerCase(),
       stripePaymentIntentId: session.id,
       status: 'pending',
       forPayment: 'missionDonation'
@@ -327,6 +323,8 @@ export class TokenPurchaseService {
       amount: donationRecord.amount,
       totalAmount: donationRecord.totalAmount ?? vendorTotalAmount,
       platformFees: donationRecord.platformFees ?? vendorPlatformFees,
+      currency: vendorCurrency,
+      currencySymbol: getCurrencySymbol(vendorCurrency),
       status: donationRecord.status,
       sessionUrl: session.url!,
     };
@@ -417,7 +415,7 @@ export class TokenPurchaseService {
       // Validate user exists
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, email: true, displayName: true, userName: true },
+        select: { id: true, email: true, displayName: true, userName: true, country: true },
       });
 
       if (!user) {
@@ -441,6 +439,10 @@ export class TokenPurchaseService {
       let productDescription: string;
       let metadataType: string;
 
+      const isPayerBrazil = isBrazilUser(user.country);
+      const payerCurrency = isPayerBrazil ? 'BRL' : 'USD';
+      const payerSymbol = getCurrencySymbol(payerCurrency);
+
       if (dto.type === 'token_purchase') {
         // Valens: token purchase excluded. Revenue from software/Stripe only, not token activity.
         throw new BadRequestException(
@@ -448,9 +450,9 @@ export class TokenPurchaseService {
         );
       } else if (dto.type === 'donation') {
         productName = 'Donation';
-        productDescription = `Donate $${dto.amount}`;
+        productDescription = `Donate ${payerSymbol}${dto.amount}`;
         metadataType = 'donation';
-        this.logger.log(`Creating donation for user ${userId}: $${dto.amount}`);
+        this.logger.log(`Creating donation for user ${userId}: ${payerSymbol}${dto.amount}`);
       } else {
         throw new BadRequestException('Invalid type');
       }
@@ -522,7 +524,7 @@ export class TokenPurchaseService {
         line_items: [
           {
             price_data: {
-              currency: 'usd',
+              currency: payerCurrency.toLowerCase(),
               product_data: {
                 name: productName,
                 description: productDescription,
@@ -547,7 +549,7 @@ export class TokenPurchaseService {
       const paymentData: any = {
         userId,
         amount: amountMinor,
-        currency: 'usd',
+        currency: payerCurrency.toLowerCase(),
         stripePaymentIntentId: session.id,
         status: 'pending',
         forPayment: 'donation',
@@ -568,6 +570,7 @@ export class TokenPurchaseService {
           vendorId: dto.vendorId,
           postId: dto.postId,
           amount: dto.amount,
+          currency: payerCurrency,
           stripeCheckoutSessionId: session.id,
           status: 'pending',
         };
@@ -584,6 +587,8 @@ export class TokenPurchaseService {
         response = {
           id: record.id,
           amount: dto.amount,
+          currency: payerCurrency,
+          currencySymbol: payerSymbol,
           status: record.status,
           sessionUrl: session.url!,
         };
@@ -965,16 +970,14 @@ export class TokenPurchaseService {
             where: { id: completedDonation.vendorId },
             select: { paymentProvider: true, country: true },
           });
-          const isPagBank =
-            (seller?.paymentProvider || '').toUpperCase() === 'PAGBANK' ||
-            (seller?.country && normalizeCountryCode(seller.country) === 'BR');
-          // const provider: 'PAGBANK' | 'STRIPE' = isPagBank ? 'PAGBANK' : 'STRIPE';
+          const isSellerBrazil = isBrazilUser(seller?.country);
           const provider: 'PAGBANK' | 'STRIPE' = 'STRIPE';
-          const targetCurrency = ((provider as string) === 'PAGBANK') ? 'brl' : 'usd';
+          const targetCurrency = isSellerBrazil ? 'brl' : 'usd';
+          const sessionCurrency = (session.currency || 'usd').toLowerCase();
 
           const finalMinor =
-            targetCurrency === 'brl'
-              ? await this.currencyConverter.convertMinor(receiverAmountCents, 'usd', 'brl')
+            targetCurrency !== sessionCurrency
+              ? await this.currencyConverter.convertMinor(receiverAmountCents, sessionCurrency, targetCurrency)
               : receiverAmountCents;
 
           await this.walletService.creditAvailable({
@@ -985,7 +988,7 @@ export class TokenPurchaseService {
             source: 'MISSION_DONATION',
             refType: 'PAYMENT',
             refId: session.id,
-            note: `Mission donation ${completedDonation.id}${targetCurrency === 'brl' ? ` (converted from ${receiverAmountCents} USD cents)` : ''}`,
+            note: `Mission donation ${completedDonation.id}${targetCurrency !== sessionCurrency ? ` (converted from ${receiverAmountCents} ${sessionCurrency.toUpperCase()} cents)` : ''}`,
           });
         }
       }
@@ -1071,8 +1074,20 @@ export class TokenPurchaseService {
       }),
     ]);
 
+    const vendorUser = await this.prisma.user.findUnique({
+      where: { id: vendorId },
+      select: { country: true },
+    });
+    const isVendorBrazil = isBrazilUser(vendorUser?.country);
+    const currency = isVendorBrazil ? 'BRL' : 'USD';
+    const currencySymbol = getCurrencySymbol(currency);
+    const totalAmount = sumResult._sum?.amount ?? 0;
+
     return {
-      totalAmount: sumResult._sum?.amount ?? 0,
+      totalAmount,
+      currency,
+      currencySymbol,
+      formattedTotalAmount: formatCurrencyAmount(totalAmount, currency),
       activePostCount,
       transactions,
     };

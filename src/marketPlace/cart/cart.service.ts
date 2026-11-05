@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { CartItemShippingChoice, ShippingOptions } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { assertUserKyc } from '../../common/kyc.util';
+import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser } from '../../common/payment-provider.util';
 import { AddCartItemDto } from './dto/add-cart-item.dto';
 import { UpdateCartItemShippingChoiceDto } from './dto/update-cart-item-shipping-choice.dto';
 import { UpdateCartItemQuantityDto } from './dto/update-cart-item-quantity.dto';
@@ -197,6 +198,14 @@ export class CartService {
             },
         });
 
+        const user = await this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { country: true },
+        });
+        const isBrazil = isBrazilUser(user?.country);
+        const currency = isBrazil ? 'BRL' : 'USD';
+        const currencySymbol = getCurrencySymbol(currency);
+
         if (!carts.length) {
             return {
                 carts: [],
@@ -204,6 +213,9 @@ export class CartService {
                     totalItems: 0,
                     totalAmount: 0,
                     totalCarts: 0,
+                    currency,
+                    currencySymbol,
+                    formattedTotalAmount: formatCurrencyAmount(0, currency),
                 },
             };
         }
@@ -224,9 +236,14 @@ export class CartService {
 
             return {
                 ...cart,
+                currency,
+                currencySymbol,
                 totals: {
                     totalItems: groupTotalItems,
                     totalAmount: groupTotalAmount,
+                    currency,
+                    currencySymbol,
+                    formattedTotalAmount: formatCurrencyAmount(groupTotalAmount, currency),
                 },
             };
         });
@@ -237,6 +254,9 @@ export class CartService {
                 totalItems,
                 totalAmount,
                 totalCarts: carts.length,
+                currency,
+                currencySymbol,
+                formattedTotalAmount: formatCurrencyAmount(totalAmount, currency),
             },
         };
     }
@@ -593,10 +613,19 @@ export class CartService {
             itemsSubtotal + shippingAmount + taxAmount + platformFee - discountAmount,
         );
 
+        const checkoutUser = await this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { country: true },
+        });
+        const isBrazil = isBrazilUser(checkoutUser?.country);
+        const currency = isBrazil ? 'BRL' : 'USD';
+        const currencySymbol = getCurrencySymbol(currency);
+
         return {
             checkout: {
                 isValid: issues.length === 0,
-                currency: 'USD',
+                currency,
+                currencySymbol,
                 checkedAt: new Date().toISOString(),
                 totalItems,
                 items,
@@ -609,6 +638,11 @@ export class CartService {
                     platformFee,
                     discountAmount,
                     totalAmountDue,
+                    currency,
+                    currencySymbol,
+                    formattedTotalAmountDue: formatCurrencyAmount(totalAmountDue, currency),
+                    formattedItemsSubtotal: formatCurrencyAmount(itemsSubtotal, currency),
+                    formattedShippingAmount: formatCurrencyAmount(shippingAmount, currency),
                 },
             },
         };

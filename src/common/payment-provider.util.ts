@@ -79,3 +79,35 @@ export function resolvePaymentProviderFromOrigin(params: {
         paymentProvider: resolvePaymentProviderFromCountry(country),
     };
 }
+
+/**
+ * Check if a country or location belongs to Brazil.
+ */
+export function isBrazilUser(country?: string | null, location?: string | null): boolean {
+    const code = normalizeCountryCode(country) || normalizeCountryCode(location);
+    return code === 'BR';
+}
+
+/**
+ * Resolve currency based on user country / location ('BRL' for Brazil, 'USD' default).
+ */
+export function getUserCurrency(country?: string | null, location?: string | null): 'BRL' | 'USD' {
+    return isBrazilUser(country, location) ? 'BRL' : 'USD';
+}
+
+/**
+ * Get currency symbol ('R$' for BRL, '$' for USD/others).
+ */
+export function getCurrencySymbol(currency?: string | null): 'R$' | '$' {
+    const norm = (currency || '').toUpperCase();
+    return norm === 'BRL' ? 'R$' : '$';
+}
+
+/**
+ * Format currency amount with symbol (e.g. "R$ 150.00" or "$ 150.00").
+ */
+export function formatCurrencyAmount(amount: number | null | undefined, currency?: string | null): string {
+    const val = Number(amount || 0);
+    const symbol = getCurrencySymbol(currency);
+    return `${symbol} ${val.toFixed(2)}`;
+}

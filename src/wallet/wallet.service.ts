@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser } from '../common/payment-provider.util';
 import {
     WalletCreditParams,
     WalletLedgerEntryType,
@@ -375,18 +376,33 @@ export class WalletService {
             orderBy: [{ provider: 'asc' }, { currency: 'asc' }],
         });
 
-        const items = wallets.map((w) => ({
-            walletId: w.id,
-            currency: w.currency,
-            provider: w.provider,
-            pendingBalanceMinor: w.pendingBalance,
-            availableBalanceMinor: w.availableBalance,
-            withdrawableBalanceMinor: w.availableBalance,
-            pendingBalance: this.toMajor(w.pendingBalance),
-            availableBalance: this.toMajor(w.availableBalance),
-            withdrawableBalance: this.toMajor(w.availableBalance),
-            updatedAt: w.updatedAt,
-        }));
+        const user = await this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { country: true },
+        });
+        const isBrazil = isBrazilUser(user?.country);
+        const resolvedCurrency = (currency || (isBrazil ? 'BRL' : 'USD')).toUpperCase();
+        const resolvedSymbol = getCurrencySymbol(resolvedCurrency);
+
+        const items = wallets.map((w) => {
+            const sym = getCurrencySymbol(w.currency);
+            return {
+                walletId: w.id,
+                currency: w.currency.toUpperCase(),
+                currencySymbol: sym,
+                provider: w.provider,
+                pendingBalanceMinor: w.pendingBalance,
+                availableBalanceMinor: w.availableBalance,
+                withdrawableBalanceMinor: w.availableBalance,
+                pendingBalance: this.toMajor(w.pendingBalance),
+                availableBalance: this.toMajor(w.availableBalance),
+                withdrawableBalance: this.toMajor(w.availableBalance),
+                formattedPendingBalance: formatCurrencyAmount(this.toMajor(w.pendingBalance), w.currency),
+                formattedAvailableBalance: formatCurrencyAmount(this.toMajor(w.availableBalance), w.currency),
+                formattedWithdrawableBalance: formatCurrencyAmount(this.toMajor(w.availableBalance), w.currency),
+                updatedAt: w.updatedAt,
+            };
+        });
 
         const totals = items.reduce(
             (acc, row) => {
@@ -398,6 +414,8 @@ export class WalletService {
         );
 
         return {
+            currency: resolvedCurrency,
+            currencySymbol: resolvedSymbol,
             pendingBalanceMinor: totals.pendingBalanceMinor,
             availableBalanceMinor: totals.availableBalanceMinor,
             withdrawableBalanceMinor: totals.availableBalanceMinor,
@@ -405,6 +423,9 @@ export class WalletService {
             availableBalance: this.toMajor(totals.availableBalanceMinor),
             /** Sum of marketplace unlocked + other earnings — only this can be withdrawn. */
             withdrawableBalance: this.toMajor(totals.availableBalanceMinor),
+            formattedPendingBalance: formatCurrencyAmount(this.toMajor(totals.pendingBalanceMinor), resolvedCurrency),
+            formattedAvailableBalance: formatCurrencyAmount(this.toMajor(totals.availableBalanceMinor), resolvedCurrency),
+            formattedWithdrawableBalance: formatCurrencyAmount(this.toMajor(totals.availableBalanceMinor), resolvedCurrency),
             wallets: items,
             note: 'Pending = marketplace inside 48h protection. Available/withdrawable = unlocked marketplace + other earnings.',
         };

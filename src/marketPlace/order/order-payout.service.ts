@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { DisputeStatus, OrderStatus, PaymentStatus, TransferStatus } from '@prisma/client';
+import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser } from '../../common/payment-provider.util';
 import { NotificationService } from '../../notification/notification.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WalletService } from '../../wallet/wallet.service';
@@ -174,24 +175,23 @@ export class OrderPayoutService {
             return { released: false, reason: 'Missing seller amount', orderId };
         }
 
-        const currency = (order.payment?.currency || 'usd').toLowerCase();
-        const providerFromPayment =
-            (order.payment?.provider || '').toUpperCase() === 'PAGBANK' ? 'PAGBANK' : null;
         const seller = await this.prisma.user.findUnique({
             where: { id: order.sellerId },
-            select: { paymentProvider: true },
+            select: { paymentProvider: true, country: true },
         });
-        const provider =
-            // providerFromPayment ||
-            // ((seller?.paymentProvider || '').toUpperCase() === 'PAGBANK' ? 'PAGBANK' : 'STRIPE');
-            'STRIPE';
-        const _unused = providerFromPayment;
-            // ((seller?.paymentProvider || '').toUpperCase() === 'PAGBANK' ? 'PAGBANK' : 'STRIPE');
+        const isSellerBrazil = isBrazilUser(seller?.country);
+        const pendingCredit = await this.prisma.walletLedgerEntry.findFirst({
+            where: { refType: 'ORDER', refId: order.id, entryType: 'PENDING_CREDIT' },
+            select: { currency: true, amountMinor: true },
+        });
+        const currency = (pendingCredit?.currency || (isSellerBrazil ? 'brl' : (order.payment?.currency || 'usd'))).toLowerCase();
+        const releaseAmountMinor = pendingCredit?.amountMinor || sellerAmountMinor;
+        const provider = 'STRIPE';
 
         try {
             const walletResult = await this.walletService.movePendingToAvailable({
                 userId: order.sellerId,
-                amountMinor: sellerAmountMinor,
+                amountMinor: releaseAmountMinor,
                 currency,
                 provider,
                 source: 'MARKETPLACE',
@@ -218,15 +218,20 @@ export class OrderPayoutService {
             });
 
             if (!options?.suppressNotification) {
+                const currencySymbol = getCurrencySymbol(currency);
+                const formattedEarnings = formatCurrencyAmount(releaseAmountMinor / 100, currency);
                 await this.notificationService.sendNotificationToUser(
                     updated.sellerId,
                     'Earnings Available',
-                    'Your marketplace earnings are now available to withdraw.',
+                    `Your marketplace earnings (${formattedEarnings}) are now available to withdraw.`,
                     {
                         type: 'marketplace_earnings_available',
                         orderId: updated.id,
                         orderNumber: updated.orderNumber,
-                        amountMinor: String(updated.sellerAmountMinor ?? 0),
+                        amountMinor: String(releaseAmountMinor),
+                        currency: currency.toUpperCase(),
+                        currencySymbol,
+                        formattedEarnings,
                         walletEntryId: walletResult.entryId,
                         iscancel: false,
                         isCancel: false,

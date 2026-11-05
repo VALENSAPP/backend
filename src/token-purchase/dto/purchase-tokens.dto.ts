@@ -298,6 +298,20 @@ export class DonationResponseDto {
   platformFees?: number;
 
   @ApiProperty({
+    description: 'Currency code (e.g. BRL, USD)',
+    example: 'BRL',
+    required: false
+  })
+  currency?: string;
+
+  @ApiProperty({
+    description: 'Currency symbol (e.g. R$, $)',
+    example: 'R$',
+    required: false
+  })
+  currencySymbol?: string;
+
+  @ApiProperty({
     description: 'Payment status',
     example: 'pending'
   })

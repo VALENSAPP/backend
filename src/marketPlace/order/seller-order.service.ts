@@ -10,6 +10,7 @@ import {
 import { CancellationStatus, CartItemShippingChoice, OrderStatus, PaymentStatus, Prisma, ShippingStatus, TransferStatus } from '@prisma/client';
 import * as sgMail from '@sendgrid/mail';
 import { MailService } from '../../common/mail/mail.service';
+import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser } from '../../common/payment-provider.util';
 import { formatPickupAvailableHours } from '../../common/pickup-hours.util';
 import { NotificationService } from '../../notification/notification.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -203,6 +204,11 @@ export class SellerOrderService {
             isViewedBySeller: true,
             sellerViewedAt: true,
             createdAt: true,
+            payment: {
+                select: {
+                    currency: true,
+                },
+            },
             buyer: {
                 select: {
                     id: true,
@@ -333,6 +339,12 @@ export class SellerOrderService {
             orders = ordersResult;
         }
 
+        const sellerUser = await this.prisma.user.findUnique({
+            where: { id: sellerId },
+            select: { country: true },
+        });
+        const isSellerBrazil = isBrazilUser(sellerUser?.country);
+
         return {
             total,
             page,
@@ -342,6 +354,9 @@ export class SellerOrderService {
                 const isLocalPickupOrder =
                     order.items.length > 0 &&
                     order.items.every((item: any) => item.selectedShippingChoice === CartItemShippingChoice.local_pick);
+                const paymentCurrency = (order.payment?.currency || '').toUpperCase();
+                const orderCurrency = isSellerBrazil ? 'BRL' : (paymentCurrency || 'USD');
+                const orderSymbol = getCurrencySymbol(orderCurrency);
 
                 return {
                     id: order.id,
@@ -349,6 +364,9 @@ export class SellerOrderService {
                     buyerId: order.buyer.id,
                     buyerName: order.buyer.displayName || order.buyer.userName || 'Unknown Buyer',
                     totalAmount: order.total,
+                    currency: orderCurrency,
+                    currencySymbol: orderSymbol,
+                    formattedTotal: formatCurrencyAmount(order.total, orderCurrency),
                     isViewedBySeller: order.isViewedBySeller,
                     sellerViewedAt: order.sellerViewedAt,
                     orderStatus:
@@ -376,6 +394,10 @@ export class SellerOrderService {
                         quantity: item.quantity,
                         price: item.price,
                         subtotal: item.subtotal,
+                        currency: orderCurrency,
+                        currencySymbol: orderSymbol,
+                        formattedPrice: formatCurrencyAmount(item.price, orderCurrency),
+                        formattedSubtotal: formatCurrencyAmount(item.subtotal, orderCurrency),
                         selectedShippingChoice: item.selectedShippingChoice,
                         selectedShippingFee: item.selectedShippingFee,
                         pickupAddress:
@@ -504,7 +526,31 @@ export class SellerOrderService {
             order.sellerViewedAt = new Date();
         }
 
-        return order;
+        const sellerUser = await this.prisma.user.findUnique({
+            where: { id: sellerId },
+            select: { country: true },
+        });
+        const isSellerBrazil = isBrazilUser(sellerUser?.country);
+        const paymentCurrency = ((order as any).payment?.currency || '').toUpperCase();
+        const orderCurrency = isSellerBrazil ? 'BRL' : (paymentCurrency || 'USD');
+        const orderSymbol = getCurrencySymbol(orderCurrency);
+
+        return {
+            ...order,
+            currency: orderCurrency,
+            currencySymbol: orderSymbol,
+            formattedTotal: formatCurrencyAmount(order.total, orderCurrency),
+            formattedSubtotal: formatCurrencyAmount(order.subtotal, orderCurrency),
+            formattedShippingCost: formatCurrencyAmount(order.shippingCost, orderCurrency),
+            formattedServiceFee: formatCurrencyAmount(order.serviceFee, orderCurrency),
+            items: (order.items || []).map((item: any) => ({
+                ...item,
+                currency: orderCurrency,
+                currencySymbol: orderSymbol,
+                formattedPrice: formatCurrencyAmount(item.price, orderCurrency),
+                formattedSubtotal: formatCurrencyAmount(item.subtotal, orderCurrency),
+            })),
+        };
     }
 
     private async sendLocalPickupReadyEmail(order: any, sellerUsername: string) {

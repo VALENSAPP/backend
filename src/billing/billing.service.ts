@@ -20,7 +20,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { PagBankService } from '../pagbank/pagbank.service';
 import { PaymentProviderResolver } from '../marketPlace/payment/payment-provider.resolver';
 import { CurrencyConverterService } from '../common/currency/currency-converter.service';
-import { normalizeCountryCode } from '../common/payment-provider.util';
+import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser, normalizeCountryCode } from '../common/payment-provider.util';
 import Stripe from 'stripe';
 import { ethers } from 'ethers';
 import { v4 as uuidv4 } from 'uuid';
@@ -344,8 +344,14 @@ export class BillingService {
    * effectiveWithdrawableNow = min(app wallet available, provider available now).
    */
   async getWalletBalanceWithProviderAvailability(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { country: true },
+    });
+    const isBrazil = isBrazilUser(user?.country);
     const provider = await this.paymentProviderResolver.ensureUserPaymentProvider(userId);
-    const currency = provider === 'PAGBANK' ? 'brl' : 'usd';
+    const currency = isBrazil ? 'brl' : (provider === 'PAGBANK' ? 'brl' : 'usd');
+    const currencySymbol = getCurrencySymbol(currency);
 
     // Keep provider/currency scoped totals for withdrawal calculations.
     const wallet = await this.walletService.getBalance(userId, { currency, provider });
@@ -356,6 +362,8 @@ export class BillingService {
         ...wallet,
         provider,
         currency,
+        currencySymbol,
+        formattedAvailableBalance: formatCurrencyAmount(this.toMajor(appWithdrawableMinor), currency),
         appWithdrawableBalanceMinor: appWithdrawableMinor,
         appWithdrawableBalance: this.toMajor(appWithdrawableMinor),
         providerAvailableBalanceMinor: appWithdrawableMinor,
@@ -389,6 +397,8 @@ export class BillingService {
         ...wallet,
         provider,
         currency,
+        currencySymbol,
+        formattedAvailableBalance: formatCurrencyAmount(this.toMajor(appWithdrawableMinor), currency),
         appWithdrawableBalanceMinor: appWithdrawableMinor,
         appWithdrawableBalance: this.toMajor(appWithdrawableMinor),
         providerAvailableBalanceMinor: providerAvailableMinor,
@@ -406,6 +416,8 @@ export class BillingService {
         ...wallet,
         provider,
         currency,
+        currencySymbol,
+        formattedAvailableBalance: formatCurrencyAmount(this.toMajor(appWithdrawableMinor), currency),
         appWithdrawableBalanceMinor: appWithdrawableMinor,
         appWithdrawableBalance: this.toMajor(appWithdrawableMinor),
         providerAvailableBalanceMinor: null,
@@ -507,8 +519,13 @@ export class BillingService {
     currency?: string;
   }) {
     if (!params.sellerUserId || params.amountMinor <= 0) return;
+    const sellerUser = await this.prisma.user.findUnique({
+      where: { id: params.sellerUserId },
+      select: { country: true },
+    });
+    const isBrazil = isBrazilUser(sellerUser?.country);
     const provider = await this.paymentProviderResolver.resolveProviderForUser(params.sellerUserId);
-    const targetCurrency = provider === 'PAGBANK' ? 'brl' : 'usd';
+    const targetCurrency = isBrazil ? 'brl' : (provider === 'PAGBANK' ? 'brl' : 'usd');
     const sourceCurrency = (params.currency || targetCurrency).toLowerCase();
 
     let amountMinor = Math.round(params.amountMinor);

@@ -9,7 +9,7 @@ import {
 import Stripe from 'stripe';
 import { PrismaService } from '../../prisma/prisma.service';
 import { assertUserKyc } from '../../common/kyc.util';
-import { normalizeCountryCode } from '../../common/payment-provider.util';
+import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser, normalizeCountryCode } from '../../common/payment-provider.util';
 import { PagBankService } from '../../pagbank/pagbank.service';
 import { OrderService } from '../order/order.service';
 import { CreateMarketplacePaymentDto } from './dto/create-marketplace-payment.dto';
@@ -329,9 +329,14 @@ export class PaymentService {
             throw new BadRequestException('Invalid cart total for payment');
         }
 
+        const buyer = await this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { country: true },
+        });
+        const isBuyerBrazil = isBrazilUser(buyer?.country);
         const buyerProvider = await this.paymentProviderResolver.resolveProviderForUser(userId);
         const currency =
-            buyerProvider === 'PAGBANK'
+            buyerProvider === 'PAGBANK' || isBuyerBrazil
                 ? 'brl'
                 : (dto.currency || 'usd').trim().toLowerCase();
 
@@ -388,7 +393,9 @@ export class PaymentService {
                     checkoutSessionId: checkout.orderId,
                     paymentIntentId: checkout.orderId,
                     amount: grandTotalMinor / 100,
-                    currency,
+                    currency: currency.toUpperCase(),
+                    currencySymbol: getCurrencySymbol(currency),
+                    formattedAmount: formatCurrencyAmount(grandTotalMinor / 100, currency),
                     expiresAt: checkout.expiresAt,
                 };
             } catch (error) {
@@ -470,7 +477,9 @@ export class PaymentService {
             checkoutSessionId: session.id,
             paymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
             amount: grandTotalMinor / 100,
-            currency,
+            currency: currency.toUpperCase(),
+            currencySymbol: getCurrencySymbol(currency),
+            formattedAmount: formatCurrencyAmount(grandTotalMinor / 100, currency),
         };
     }
 

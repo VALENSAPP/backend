@@ -8,7 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { WalletService } from '../../wallet/wallet.service';
 import { PagBankService } from '../../pagbank/pagbank.service';
 import { CurrencyConverterService } from '../../common/currency/currency-converter.service';
-import { normalizeCountryCode } from '../../common/payment-provider.util';
+import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser, normalizeCountryCode } from '../../common/payment-provider.util';
 import { BuyerOrderListQueryDto } from './dto/buyer-order-list-query.dto';
 import { OrderPayoutService } from './order-payout.service';
 
@@ -284,6 +284,14 @@ export class OrderService {
                     totalPointsAwardedToBuyer += earnedPoints;
                 }
 
+                const sellerForNotif = await tx.user.findUnique({
+                    where: { id: item.sellerId },
+                    select: { paymentProvider: true, country: true },
+                });
+                const isSellerBrazil = isBrazilUser(sellerForNotif?.country);
+                const notifCurrency = isSellerBrazil ? 'BRL' : (paymentRecord.currency?.toUpperCase() || 'USD');
+                const notifSymbol = getCurrencySymbol(notifCurrency);
+
                 createdOrderIds.push(order.id);
                 orderNotifications.push({
                     sellerId: item.sellerId,
@@ -291,21 +299,13 @@ export class OrderService {
                     orderNumber: order.orderNumber,
                     image: item.productImage || '',
                     productName: item.productName || '',
-                    price: String(this.toMajor(totalMinor)),
+                    price: `${notifSymbol} ${this.toMajor(totalMinor).toFixed(2)}`,
                     pointsEarned: earnedPoints,
                 });
 
                 if (sellerAmountMinor > 0) {
-                    const seller = await tx.user.findUnique({
-                        where: { id: item.sellerId },
-                        select: { paymentProvider: true, country: true },
-                    });
-                    const isStripe =
-                        (seller?.paymentProvider || '').toUpperCase() === 'STRIPE' ||
-                        (seller?.country && normalizeCountryCode(seller.country) !== 'BR');
-                    // const provider: 'PAGBANK' | 'STRIPE' = isStripe ? 'STRIPE' : 'PAGBANK';
                     const provider: 'PAGBANK' | 'STRIPE' = 'STRIPE';
-                    const targetCurrency = ((provider as string) === 'PAGBANK') ? 'brl' : 'usd';
+                    const targetCurrency = isSellerBrazil ? 'brl' : 'usd';
                     const sourceCurrency = (paymentRecord.currency || targetCurrency).toLowerCase();
 
                     let finalSellerAmountMinor = Math.round(sellerAmountMinor);
@@ -568,6 +568,11 @@ export class OrderService {
                 }
                 : {}),
             include: {
+                payment: {
+                    select: {
+                        currency: true,
+                    },
+                },
                 seller: {
                     select: {
                         id: true,
@@ -617,13 +622,28 @@ export class OrderService {
             },
         });
 
+        const buyerUser = await this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { country: true },
+        });
+        const isBuyerBrazil = isBrazilUser(buyerUser?.country);
+
         return orders.map((order) => {
             const isLocalPickupOrder =
                 order.items.length > 0 &&
                 order.items.every((item) => item.selectedShippingChoice === CartItemShippingChoice.local_pick);
+            const paymentCurrency = (order.payment?.currency || '').toUpperCase();
+            const orderCurrency = paymentCurrency === 'BRL' || isBuyerBrazil ? 'BRL' : (paymentCurrency || 'USD');
+            const orderSymbol = getCurrencySymbol(orderCurrency);
 
             return {
                 ...order,
+                currency: orderCurrency,
+                currencySymbol: orderSymbol,
+                formattedTotal: formatCurrencyAmount(order.total, orderCurrency),
+                formattedSubtotal: formatCurrencyAmount(order.subtotal, orderCurrency),
+                formattedShippingCost: formatCurrencyAmount(order.shippingCost, orderCurrency),
+                formattedServiceFee: formatCurrencyAmount(order.serviceFee, orderCurrency),
                 orderStatus:
                     isLocalPickupOrder && order.orderStatus === OrderStatus.PENDING
                         ? 'localpickup'
@@ -638,6 +658,10 @@ export class OrderService {
                     quantity: item.quantity,
                     price: item.price,
                     subtotal: item.subtotal,
+                    currency: orderCurrency,
+                    currencySymbol: orderSymbol,
+                    formattedPrice: formatCurrencyAmount(item.price, orderCurrency),
+                    formattedSubtotal: formatCurrencyAmount(item.subtotal, orderCurrency),
                     selectedShippingChoice: item.selectedShippingChoice,
                     selectedShippingFee: item.selectedShippingFee,
                     pickupAddress:
@@ -733,8 +757,23 @@ export class OrderService {
         if (!order) throw new NotFoundException('Order not found');
         if (order.buyerId !== userId) throw new UnauthorizedException('Unauthorized');
 
+        const buyerUser = await this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { country: true },
+        });
+        const isBuyerBrazil = isBrazilUser(buyerUser?.country);
+        const paymentCurrency = (order.payment?.currency || '').toUpperCase();
+        const orderCurrency = paymentCurrency === 'BRL' || isBuyerBrazil ? 'BRL' : (paymentCurrency || 'USD');
+        const orderSymbol = getCurrencySymbol(orderCurrency);
+
         return {
             ...order,
+            currency: orderCurrency,
+            currencySymbol: orderSymbol,
+            formattedTotal: formatCurrencyAmount(order.total, orderCurrency),
+            formattedSubtotal: formatCurrencyAmount(order.subtotal, orderCurrency),
+            formattedShippingCost: formatCurrencyAmount(order.shippingCost, orderCurrency),
+            formattedServiceFee: formatCurrencyAmount(order.serviceFee, orderCurrency),
             pointsEarned: order.shopRewardPointsAward?.points || 0,
             totalItemCount: order.items.length,
             items: order.items.map((item) => ({
@@ -747,6 +786,10 @@ export class OrderService {
                 quantity: item.quantity,
                 price: item.price,
                 subtotal: item.subtotal,
+                currency: orderCurrency,
+                currencySymbol: orderSymbol,
+                formattedPrice: formatCurrencyAmount(item.price, orderCurrency),
+                formattedSubtotal: formatCurrencyAmount(item.subtotal, orderCurrency),
                 selectedShippingChoice: item.selectedShippingChoice,
                 selectedShippingFee: item.selectedShippingFee,
                 pickupAddress:
