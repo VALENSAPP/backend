@@ -112,8 +112,8 @@ export class BillingService {
       priceId = (
         isYearly
           ? (isCompany
-              ? (process.env.STRIPE_PRICE_ID_Business_YEARLY || process.env.STRIPE_PRICE_ID_YEARLY_Business || process.env.STRIPE_PRICE_ID_YEARLY)
-              : process.env.STRIPE_PRICE_ID_YEARLY)
+            ? (process.env.STRIPE_PRICE_ID_Business_YEARLY || process.env.STRIPE_PRICE_ID_YEARLY_Business || process.env.STRIPE_PRICE_ID_YEARLY)
+            : process.env.STRIPE_PRICE_ID_YEARLY)
           : (isCompany ? process.env.STRIPE_PRICE_ID_Business : process.env.STRIPE_PRICE_ID)
       ) as string;
     }
@@ -596,6 +596,13 @@ export class BillingService {
     });
     const creatorName = contentUser?.displayName || contentUser?.userName || 'Creator';
 
+    const payerUser = await this.prisma.user.findUnique({
+      where: { id: payerUserId },
+      select: { country: true },
+    });
+    const isPayerBrazil = isBrazilUser(payerUser?.country);
+    const currency = isPayerBrazil ? 'brl' : 'usd';
+
     if (isAutoRenew) {
       const session = await this.stripe.checkout.sessions.create({
         mode: 'subscription',
@@ -605,7 +612,7 @@ export class BillingService {
         line_items: [
           {
             price_data: {
-              currency: 'usd',
+              currency,
               product_data: {
                 name: `Monthly Subscription to ${creatorName}`,
               },
@@ -655,7 +662,7 @@ export class BillingService {
       line_items: [
         {
           price_data: {
-            currency: 'usd',
+            currency,
             product_data: {
               name: `Following Payment to ${creatorName}`,
             },
@@ -1239,6 +1246,13 @@ export class BillingService {
       throw new BadRequestException('Missing STRIPE_SUCCESS_URL/STRIPE_CANCEL_URL env vars');
     }
 
+    const senderUser = await this.prisma.user.findUnique({
+      where: { id: senderUserId },
+      select: { country: true },
+    });
+    const isBrazilSender = isBrazilUser(senderUser?.country);
+    const currency = isBrazilSender ? 'brl' : 'usd';
+
     const amountCents = Math.round(amount * 100);
     const {
       platformFeeCents: applicationFeeCents,
@@ -1256,7 +1270,7 @@ export class BillingService {
       line_items: [
         {
           price_data: {
-            currency: 'usd',
+            currency,
             product_data: {
               name: 'Tip Payment',
             },
@@ -1443,6 +1457,13 @@ export class BillingService {
       totalAmount,
     } = this.getEbookAmountSplit(amountCents);
 
+    const buyerUser = await this.prisma.user.findUnique({
+      where: { id: buyerUserId },
+      select: { country: true },
+    });
+    const isBuyerBrazil = isBrazilUser(buyerUser?.country);
+    const paymentCurrency = isBuyerBrazil || buyerProvider === 'PAGBANK' ? 'brl' : 'usd';
+
     const ebookPayment = await (this.prisma as any).ebookPayments.create({
       data: {
         buyerId: buyerUserId,
@@ -1451,7 +1472,7 @@ export class BillingService {
         amount: amountCents,
         platformFee: platformFeeCents,
         sellerAmount: receiverAmountCents,
-        currency: buyerProvider === 'PAGBANK' ? 'brl' : 'usd',
+        currency: paymentCurrency,
         provider: buyerProvider,
         status: 'PENDING',
         metadata: {
@@ -1518,7 +1539,7 @@ export class BillingService {
         line_items: [
           {
             price_data: {
-              currency: 'usd',
+              currency: paymentCurrency,
               product_data: {
                 name: 'Ebook Payment',
               },
@@ -1642,6 +1663,13 @@ export class BillingService {
       totalAmount,
     } = this.getEbookAmountSplit(amountCents);
 
+    const buyerUser = await this.prisma.user.findUnique({
+      where: { id: buyerUserId },
+      select: { country: true },
+    });
+    const isBuyerBrazil = isBrazilUser(buyerUser?.country);
+    const paymentCurrency = isBuyerBrazil || buyerProvider === 'PAGBANK' ? 'brl' : 'usd';
+
     const shopEbookPayment = await (this.prisma as any).shopEbookPayments.create({
       data: {
         buyerId: buyerUserId,
@@ -1651,7 +1679,7 @@ export class BillingService {
         amount: amountCents,
         platformFee: platformFeeCents,
         sellerAmount: receiverAmountCents,
-        currency: buyerProvider === 'PAGBANK' ? 'brl' : 'usd',
+        currency: paymentCurrency,
         provider: buyerProvider,
         status: 'PENDING',
         metadata: {
@@ -1713,7 +1741,7 @@ export class BillingService {
         line_items: [
           {
             price_data: {
-              currency: 'usd',
+              currency: paymentCurrency,
               product_data: {
                 name: ebook.caption || 'Shop Ebook Payment',
               },
@@ -4164,8 +4192,13 @@ export class BillingService {
       throw new BadRequestException('Invalid withdrawal amount');
     }
 
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { country: true },
+    });
+    const isBrazil = isBrazilUser(user?.country);
     const provider = await this.paymentProviderResolver.ensureUserPaymentProvider(userId);
-    const currency = provider === 'PAGBANK' ? 'brl' : 'usd';
+    const currency = isBrazil || provider === 'PAGBANK' ? 'brl' : 'usd';
 
     if (provider === 'STRIPE') {
       await this.requireCanReceivePayments(userId);
@@ -4728,6 +4761,8 @@ export class BillingService {
     }
 
     const customerId = await this.ensureStripeCustomer(userId);
+    const isBrazil = isBrazilUser(user.country);
+    const currency = isBrazil ? 'brl' : 'usd';
 
     const session = await this.stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -4735,7 +4770,7 @@ export class BillingService {
       line_items: [
         {
           price_data: {
-            currency: 'usd',
+            currency,
             product_data: {
               name: 'Fans Page Subscription',
             },
@@ -4757,7 +4792,7 @@ export class BillingService {
       data: {
         userId: userId,
         amount: amount,
-        currency: 'USD',
+        currency: currency.toUpperCase(),
         status: 'pending',
         forPayment: 'fanSubscription',
         stripePaymentIntentId: (session.payment_intent as string) || session.id,
@@ -4895,6 +4930,13 @@ export class BillingService {
     const platformFee = applicationFeeCents / 100;
     const totalAmount = amountCents / 100;
 
+    const fanUser = await this.prisma.user.findUnique({
+      where: { id: fanUserId },
+      select: { country: true, email: true, displayName: true, userName: true },
+    });
+    const isFanBrazil = isBrazilUser(fanUser?.country);
+    const paymentCurrency = isFanBrazil || fanProvider === 'PAGBANK' ? 'BRL' : 'USD';
+
     const payment = await this.prisma.payment.create({
       data: {
         userId: buyUserId,
@@ -4902,7 +4944,7 @@ export class BillingService {
         amount: receiverAmount,
         platformFee,
         totalAmount,
-        currency: fanProvider === 'PAGBANK' ? 'BRL' : 'USD',
+        currency: paymentCurrency,
         status: 'pending',
         forPayment: 'fanSubscriptionBuy',
         stripePaymentIntentId: customPaymentIntentId,
@@ -4912,16 +4954,12 @@ export class BillingService {
     });
 
     if (fanProvider === 'PAGBANK') {
-      const fan = await this.prisma.user.findUnique({
-        where: { id: fanUserId },
-        select: { email: true, displayName: true, userName: true },
-      });
       const checkout = await this.pagBankService.createPixCheckout({
         referenceId: payment.id,
         amountMinor: amountCents,
         description: `Fan Subscription to ${buyUser.displayName || buyUser.userName}`,
-        customerEmail: fan?.email || undefined,
-        customerName: fan?.displayName || fan?.userName || undefined,
+        customerEmail: fanUser?.email || undefined,
+        customerName: fanUser?.displayName || fanUser?.userName || undefined,
       });
       await this.prisma.payment.update({
         where: { id: payment.id },
@@ -4944,7 +4982,7 @@ export class BillingService {
       line_items: [
         {
           price_data: {
-            currency: 'usd',
+            currency: paymentCurrency.toLowerCase(),
             product_data: {
               name: `Fan Subscription to ${buyUser.displayName || buyUser.userName}`,
             },

@@ -18,6 +18,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { assertUserKyc } from '../../common/kyc.util';
 import { PagBankService } from '../../pagbank/pagbank.service';
 import { PaymentProviderResolver } from '../payment/payment-provider.resolver';
+import { isBrazilUser } from '../../common/payment-provider.util';
 import { CreateMarketplaceWinnerPromotionDto } from './dto/create-marketplace-winner-promotion.dto';
 import {
     MARKETPLACE_WINNER_PROMOTION_SORT_FIELDS,
@@ -451,10 +452,15 @@ export class MarketplaceWinnerPromotionService {
             throw new BadRequestException('Missing promotion amount');
         }
 
+        const seller = await this.prisma.user.findUnique({
+            where: { id: sellerId },
+            select: { email: true, displayName: true, userName: true, country: true },
+        });
+        const isBrazil = isBrazilUser(seller?.country);
         const amountMinor = this.toMinorUnits(amountToPay);
         const currencyCode = promotion.currency ?? promotion.package?.currency ?? 'USD';
         const currencyLower =
-            provider === 'PAGBANK' ? 'brl' : this.normalizeCurrency(currencyCode).toLowerCase();
+            isBrazil || provider === 'PAGBANK' ? 'brl' : this.normalizeCurrency(currencyCode).toLowerCase();
 
         const payment = await this.prisma.marketPlacePayments.create({
             data: {
@@ -476,10 +482,6 @@ export class MarketplaceWinnerPromotionService {
         });
 
         if (provider === 'PAGBANK') {
-            const seller = await this.prisma.user.findUnique({
-                where: { id: sellerId },
-                select: { email: true, displayName: true, userName: true },
-            });
             const checkout = await this.pagBankService.createPixCheckout({
                 referenceId: payment.id,
                 amountMinor,

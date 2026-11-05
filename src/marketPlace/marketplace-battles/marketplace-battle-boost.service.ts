@@ -17,6 +17,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { assertUserKyc } from '../../common/kyc.util';
 import { PagBankService } from '../../pagbank/pagbank.service';
 import { PaymentProviderResolver } from '../payment/payment-provider.resolver';
+import { isBrazilUser } from '../../common/payment-provider.util';
 import { CreateMarketplaceBattleBoostDto } from './dto/create-marketplace-battle-boost.dto';
 import {
     MARKETPLACE_BATTLE_BOOST_SORT_FIELDS,
@@ -364,9 +365,14 @@ export class MarketplaceBattleBoostService {
             }
         }
 
+        const seller = await this.prisma.user.findUnique({
+            where: { id: sellerId },
+            select: { email: true, displayName: true, userName: true, country: true },
+        });
+        const isBrazil = isBrazilUser(seller?.country);
         const amountMinor = this.toMinorUnits(boost.amount);
         const currencyLower =
-            provider === 'PAGBANK' ? 'brl' : this.normalizeCurrency(boost.currency).toLowerCase();
+            isBrazil || provider === 'PAGBANK' ? 'brl' : this.normalizeCurrency(boost.currency).toLowerCase();
 
         const payment = await this.prisma.marketPlacePayments.create({
             data: {
@@ -389,10 +395,6 @@ export class MarketplaceBattleBoostService {
         });
 
         if (provider === 'PAGBANK') {
-            const seller = await this.prisma.user.findUnique({
-                where: { id: sellerId },
-                select: { email: true, displayName: true, userName: true },
-            });
             const checkout = await this.pagBankService.createPixCheckout({
                 referenceId: payment.id,
                 amountMinor,
