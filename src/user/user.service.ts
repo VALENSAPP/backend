@@ -2050,25 +2050,131 @@ export class UserService {
   }
 
   // Check username availability and provide suggestions
-  async checkUserNameAvailability(userName: string, excludeUserId?: string, email?: string) {
-    if (!userName || userName.trim() === '') {
+  // async checkUserNameAvailability(userName: string, excludeUserId?: string, email?: string) {
+  //   if (!userName || userName.trim() === '') {
+  //     throw new BadRequestException('Username is required');
+  //   }
+
+  //   const trimmedUserName = userName.trim();
+  //   const normalizedEmail = email ? email.trim().toLowerCase() : undefined;
+
+  //   // Check if username already exists (case-insensitive, active users)
+  //   const existingUser = await this.prisma.user.findFirst({
+  //     where: {
+  //       userName: { equals: trimmedUserName, mode: 'insensitive' },
+  //       deletedAt: null,
+  //       ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+  //     },
+  //     select: { id: true, email: true, verifyEmail: true },
+  //   });
+
+  //   if (!existingUser) {
+  //     return {
+  //       isAvailable: true,
+  //       status: 'approved',
+  //       message: 'Username is available',
+  //       userName: trimmedUserName,
+  //     };
+  //   }
+
+  //   // If an unverified user exists with this username:
+  //   // Allow re-registration if it belongs to the same email OR if email is not provided yet (unverified accounts do not permanently lock usernames)
+  //   if (existingUser.verifyEmail !== 1) {
+  //     if (!normalizedEmail || (existingUser.email && existingUser.email.toLowerCase() === normalizedEmail)) {
+  //       return {
+  //         isAvailable: true,
+  //         status: 'approved',
+  //         message: 'Username is available',
+  //         userName: trimmedUserName,
+  //       };
+  //     }
+  //   }
+
+  //   // If username exists and is verified (or belongs to another account), generate suggestions
+  //   const suggestions = await this.generateUserNameSuggestions(trimmedUserName);
+
+  //   return {
+  //     isAvailable: false,
+  //     status: 'taken',
+  //     message: 'Username already taken',
+  //     userName: trimmedUserName,
+  //     suggestions: suggestions,
+  //   };
+  // }
+
+
+
+  async checkUserNameAvailability(
+    userName: string,
+    excludeUserId?: string,
+    email?: string,
+  ) {
+    // 1. Validate username
+    if (!userName || !userName.trim()) {
       throw new BadRequestException('Username is required');
     }
 
     const trimmedUserName = userName.trim();
-    const normalizedEmail = email ? email.trim().toLowerCase() : undefined;
+    const normalizedEmail = email?.trim().toLowerCase();
 
-    // Check if username already exists (case-insensitive, active users)
-    const existingUser = await this.prisma.user.findFirst({
-      where: {
-        userName: { equals: trimmedUserName, mode: 'insensitive' },
-        deletedAt: null,
-        ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+    // 2. Common filters for active users
+    const baseWhere = {
+      userName: {
+        equals: trimmedUserName,
+        mode: 'insensitive' as const,
       },
-      select: { id: true, email: true, verifyEmail: true },
+      deletedAt: null,
+      isDeleted: 0,
+      ...(excludeUserId
+        ? {
+          id: {
+            not: excludeUserId,
+          },
+        }
+        : {}),
+    };
+
+    // 3. First check whether a verified user owns this username
+    const verifiedUser = await this.prisma.user.findFirst({
+      where: {
+        ...baseWhere,
+        verifyEmail: 1,
+      },
+      select: {
+        id: true,
+      },
     });
 
-    if (!existingUser) {
+    // If verified username exists, it is permanently taken
+    if (verifiedUser) {
+      const suggestions =
+        await this.generateUserNameSuggestions(trimmedUserName);
+
+      return {
+        isAvailable: false,
+        status: 'taken',
+        message: 'Username already taken',
+        userName: trimmedUserName,
+        suggestions,
+      };
+    }
+
+    // 4. Check unverified accounts using this username
+    const unverifiedUsers = await this.prisma.user.findMany({
+      where: {
+        ...baseWhere,
+        verifyEmail: {
+          not: 1,
+        },
+      },
+      select: {
+        id: true,
+        email: true,
+      },
+    });
+
+    // 5. If no existing unverified account, username is available
+    if (unverifiedUsers.length === 0) {
       return {
         isAvailable: true,
         status: 'approved',
@@ -2077,30 +2183,44 @@ export class UserService {
       };
     }
 
-    // If an unverified user exists with this username:
-    // Allow re-registration if it belongs to the same email OR if email is not provided yet (unverified accounts do not permanently lock usernames)
-    if (existingUser.verifyEmail !== 1) {
-      if (!normalizedEmail || (existingUser.email && existingUser.email.toLowerCase() === normalizedEmail)) {
-        return {
-          isAvailable: true,
-          status: 'approved',
-          message: 'Username is available',
-          userName: trimmedUserName,
-        };
-      }
+    // 6. If email is not provided, allow reuse of unverified username
+    if (!normalizedEmail) {
+      return {
+        isAvailable: true,
+        status: 'approved',
+        message: 'Username is available',
+        userName: trimmedUserName,
+      };
     }
 
-    // If username exists and is verified (or belongs to another account), generate suggestions
-    const suggestions = await this.generateUserNameSuggestions(trimmedUserName);
+    // 7. Check whether an unverified account belongs to the same email
+    const sameEmailAccount = unverifiedUsers.some(
+      (user) =>
+        user.email?.trim().toLowerCase() === normalizedEmail,
+    );
+
+    if (sameEmailAccount) {
+      return {
+        isAvailable: true,
+        status: 'approved',
+        message: 'Username is available',
+        userName: trimmedUserName,
+      };
+    }
+
+    // 8. Username belongs to another unverified account
+    const suggestions =
+      await this.generateUserNameSuggestions(trimmedUserName);
 
     return {
       isAvailable: false,
       status: 'taken',
       message: 'Username already taken',
       userName: trimmedUserName,
-      suggestions: suggestions,
+      suggestions,
     };
   }
+
 
   // Generate username suggestions
   private async generateUserNameSuggestions(baseName: string): Promise<string[]> {
