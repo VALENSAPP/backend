@@ -505,66 +505,101 @@ export class BattleService {
     ];
   }
 
-  getPredictionSportsLeagues(subCategory?: string) {
-    const leaguesBySubCategory: Record<string, string[]> = {
-      CRICKET: ['IPL', 'T20_WORLD_CUP', 'BBL', 'PSL', 'THE_HUNDRED', 'WPL'],
-      FOOTBALL: [
-        'BRASILEIRAO_SERIE_A',
-        'BRASILEIRAO_SERIE_B',
-        'BRASILEIRAO_SERIE_C',
-        'BRASILEIRAO_SERIE_D',
-        'COPA_DO_BRASIL',
-        'SUPERCOPA_DO_BRASIL',
-        'COPA_DO_NORDESTE',
-        'COPA_VERDE',
-        'PAULISTA_A1',
-        'PAULISTA_A2',
-        'CARIOCA_A1',
-        'CARIOCA_A2',
-        'MINEIRO_1',
-        'GAUCHO_1',
-        'BAIANO_1',
-        'CEARENSE_1',
-        'PARANAENSE_1',
-        'CATARINENSE_1',
-        'PERNAMBUCANO_1',
-        'GOIANO_1',
-        'COPA_LIBERTADORES',
-        'COPA_SUDAMERICANA',
-        'RECOPA_SUDAMERICANA',
-        'CHAMPIONS_LEAGUE',
-        'EUROPA_LEAGUE',
-        'CONFERENCE_LEAGUE',
-        'UEFA_NATIONS_LEAGUE',
-        'WORLD_CUP_QUALIFIERS_CONMEBOL',
-        'WORLD_CUP_QUALIFIERS_UEFA',
-        'COPA_AMERICA',
-        'FIFA_WORLD_CUP',
-        'PREMIER_LEAGUE',
-        'LA_LIGA',
-        'SERIE_A',
-        'BUNDESLIGA',
-        'LIGUE_1',
-        'MLS',
-      ],
-      BASKETBALL: ['NBA', 'WNBA', 'EUROLEAGUE'],
-      AMERICAN_FOOTBALL: ['NFL', 'NCAA_FOOTBALL'],
-      BASEBALL: ['MLB'],
-      MMA_BOXING: ['UFC', 'ONE_CHAMPIONSHIP'],
-      FORMULA1: ['FORMULA_1', 'NASCAR'],
-      HOCKEY: ['NHL'],
-      ESPORTS: ['DOTA_2', 'CS_GO', 'LEAGUE_OF_LEGENDS', 'VALORANT'],
-    };
+  private readonly activeLeaguesCache = new Map<string, { expiresAt: number; leagues: string[] }>();
 
-    if (subCategory) {
-      const clean = subCategory.trim().toUpperCase().replace(/[\s-_]+/g, '_');
-      if (clean !== 'ALL' && leaguesBySubCategory[clean]) {
-        return ['ALL', ...leaguesBySubCategory[clean]];
-      }
+  private isBrazilLeagueKey(clean: string): boolean {
+    return (
+      clean.includes('BRASIL') ||
+      clean.includes('BRAZIL') ||
+      clean.includes('BRASILEIRAO') ||
+      clean.includes('PAULISTA') ||
+      clean.includes('CARIOCA') ||
+      clean.includes('MINEIRO') ||
+      clean.includes('GAUCHO') ||
+      clean.includes('BAIANO') ||
+      clean.includes('CEARENSE') ||
+      clean.includes('PARANAENSE') ||
+      clean.includes('CATARINENSE') ||
+      clean.includes('PERNAMBUCANO') ||
+      clean.includes('GOIANO') ||
+      clean.includes('COPA_DO_BRASIL') ||
+      clean.includes('COPA_DO_NORDESTE') ||
+      clean.includes('COPA_VERDE') ||
+      clean.includes('FARES_LOPES')
+    );
+  }
+
+  async getPredictionSportsLeagues(subCategory?: string): Promise<string[]> {
+    const cleanSubCat = (subCategory || '').trim().toUpperCase().replace(/[\s-_]+/g, '_');
+    const cacheKey = `active_leagues_${cleanSubCat || 'ALL'}`;
+    const cached = this.activeLeaguesCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.leagues;
     }
 
-    const allLeagues = Array.from(new Set(Object.values(leaguesBySubCategory).flat()));
-    return ['ALL', ...allLeagues];
+    try {
+      const activeLeaguesSet = new Set<string>();
+
+      if (cleanSubCat === 'AMERICAN_FOOTBALL') {
+        const nflMarkets = await this.getPredictionProvider(PredictionProvider.POLYMARKET).listMarkets(PredictionCategory.SPORTS, 'AMERICAN_FOOTBALL');
+        for (const m of nflMarkets) {
+          if (m?.league) activeLeaguesSet.add(m.league.toUpperCase());
+        }
+      } else if (cleanSubCat === 'FOOTBALL' || cleanSubCat === 'SOCCER') {
+        const soccerMarkets = await this.getPredictionProvider(PredictionProvider.API_FOOTBALL).listMarkets(PredictionCategory.SPORTS, 'FOOTBALL');
+        for (const m of soccerMarkets) {
+          if (m?.league) activeLeaguesSet.add(m.league.toUpperCase());
+        }
+      } else {
+        // General or ALL
+        const results = await Promise.allSettled([
+          this.getPredictionProvider(PredictionProvider.API_FOOTBALL).listMarkets(PredictionCategory.SPORTS, cleanSubCat !== 'ALL' ? cleanSubCat : undefined),
+          this.getPredictionProvider(PredictionProvider.POLYMARKET).listMarkets(PredictionCategory.SPORTS, cleanSubCat !== 'ALL' ? cleanSubCat : undefined),
+        ]);
+        for (const res of results) {
+          if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+            for (const m of res.value) {
+              if (m?.league) activeLeaguesSet.add(m.league.toUpperCase());
+            }
+          }
+        }
+      }
+
+      if (activeLeaguesSet.size > 0) {
+        const activeLeagues = Array.from(activeLeaguesSet);
+        activeLeagues.sort((a, b) => {
+          const aBr = this.isBrazilLeagueKey(a) ? 1 : 0;
+          const bBr = this.isBrazilLeagueKey(b) ? 1 : 0;
+          if (aBr !== bBr) return bBr - aBr;
+          return a.localeCompare(b);
+        });
+
+        const result = ['ALL', ...activeLeagues];
+        this.activeLeaguesCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1000, leagues: result });
+        return result;
+      }
+    } catch (err: any) {
+      this.logger.warn(`Failed dynamically fetching active leagues for ${subCategory}: ${err?.message}`);
+    }
+
+    // Static fallback only if third-party providers return 0
+    const fallbackLeagues: Record<string, string[]> = {
+      CRICKET: ['IPL', 'T20_WORLD_CUP', 'BBL', 'PSL', 'THE_HUNDRED', 'WPL'],
+      FOOTBALL: ['BRASILEIRAO_SERIE_B', 'PREMIER_LEAGUE', 'CHAMPIONS_LEAGUE', 'LA_LIGA'],
+      BASKETBALL: ['NBA', 'WNBA', 'EUROLEAGUE'],
+      AMERICAN_FOOTBALL: ['NFL'],
+      BASEBALL: ['MLB'],
+      MMA_BOXING: ['UFC'],
+      FORMULA1: ['FORMULA_1'],
+      HOCKEY: ['NHL'],
+      ESPORTS: ['DOTA_2', 'CS_GO', 'LEAGUE_OF_LEGENDS'],
+    };
+
+    if (cleanSubCat && cleanSubCat !== 'ALL' && fallbackLeagues[cleanSubCat]) {
+      return ['ALL', ...fallbackLeagues[cleanSubCat]];
+    }
+
+    return ['ALL', 'BRASILEIRAO_SERIE_B', 'NFL', 'PREMIER_LEAGUE', 'CHAMPIONS_LEAGUE', 'NBA', 'UFC'];
   }
 
   async listPredictionQuestions(
