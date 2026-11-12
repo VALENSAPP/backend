@@ -19,6 +19,7 @@ import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
+import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
 import { MyclosetService } from './mycloset.service';
 import { CreateMyclosetDto } from './dto/create-mycloset.dto';
 import { UpdateMyclosetDto } from './dto/update-mycloset.dto';
@@ -173,6 +174,19 @@ export class MyclosetController {
   @ApiOperation({ summary: 'Get view count for a closet' })
   async getUniqueViewsByClosetId(@Param('closetId') closetId: string) {
     return this.myclosetService.getClosetUniqueViewCount(closetId);
+  }
+
+  @Get('items/:itemId/details')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiParam({ name: 'itemId', type: 'string', description: 'Closet item ID' })
+  @ApiOperation({
+    summary: 'Get public details of a closet item (for other users / buyers)',
+    description: 'Returns product details, specifications, shipping info, battle winner stats, and closet owner info.',
+  })
+  async getItemDetails(@Req() req: Request, @Param('itemId') itemId: string) {
+    const viewerId = (req.user as any)?.userId;
+    return this.myclosetService.getItemDetails(itemId, viewerId);
   }
 
   @Get('items/:itemId')

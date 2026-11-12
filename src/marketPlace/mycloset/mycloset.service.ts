@@ -8,6 +8,7 @@ import { CreateClosetItemDto } from './dto/create-closet-item.dto';
 import { UpdateClosetItemDto } from './dto/update-closet-item.dto';
 import { ListShopsQueryDto } from './dto/list-shops-query.dto';
 import { ModerationService } from '../../moderation/moderation.service';
+import { getUserCurrency } from '../../common/payment-provider.util';
 
 const MYCLOSET_LOGOS_FOLDER = 'mycloset-logos';
 const CLOSET_ITEMS_FOLDER = 'closet-items';
@@ -487,6 +488,151 @@ export class MyclosetService {
       where: { closetId, moderationStatus: 'APPROVED' as any, isDeleted: false },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  async getItemDetails(itemId: string, viewerUserId?: string) {
+    if (!itemId) throw new BadRequestException('Closet item ID required');
+
+    const item = await this.prisma.closetItems.findUnique({
+      where: { id: itemId },
+      include: {
+        closet: {
+          select: {
+            id: true,
+            shopName: true,
+            shopUsername: true,
+            shopLogo: true,
+            location: true,
+          },
+        },
+        user: {
+          select: {
+            id: true,
+            userName: true,
+            displayName: true,
+            image: true,
+            profile: true,
+            country: true,
+          },
+        },
+      },
+    });
+
+    if (!item || item.isDeleted) {
+      throw new NotFoundException('Closet item not found');
+    }
+
+    const isOwner = Boolean(viewerUserId && item.userId === viewerUserId);
+    if (!isOwner) {
+      if (!item.isActive || (item.moderationStatus as string) === 'REJECTED') {
+        throw new NotFoundException('Closet item not found');
+      }
+    }
+
+    const winningParticipant = await this.prisma.marketplaceBattleParticipant.findFirst({
+      where: {
+        productId: itemId,
+        isWinner: true,
+        battle: {
+          status: 'COMPLETED',
+          outcome: 'WINNER',
+        },
+      },
+      include: {
+        battle: {
+          select: {
+            id: true,
+            title: true,
+            totalVotes: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    let isWinner = false;
+    let winnerPct: number | null = null;
+    let totalVotes = 0;
+    let battleId: string | null = null;
+    let battleTitle: string | null = null;
+
+    if (winningParticipant && winningParticipant.battle) {
+      isWinner = true;
+      totalVotes = winningParticipant.battle.totalVotes || 0;
+      const participantVotes = winningParticipant.voteCount || 0;
+      winnerPct = totalVotes > 0 ? Math.round((participantVotes / totalVotes) * 100) : 0;
+      battleId = winningParticipant.battle.id;
+      battleTitle = winningParticipant.battle.title;
+    }
+
+    const conditionMap: Record<string, string> = {
+      New: 'New',
+      Used: 'Used',
+      Good_condition: 'Good condition',
+      Need_attention: 'Need attention',
+    };
+    const formattedCondition = conditionMap[item.condition] || item.condition || 'New';
+
+    const shippingOptionMap: Record<string, string> = {
+      ship_items: 'Ship items',
+      local_pick: 'Local pickup',
+      both: 'both',
+    };
+    const formattedShippingOption = shippingOptionMap[item.shippingOption] || item.shippingOption || 'Ship items';
+
+    let shippingDescription = "We'll deliver it to your door";
+    if (item.shippingOption === 'local_pick') {
+      shippingDescription = 'Available for local pickup';
+    } else if (item.shippingOption === 'both') {
+      shippingDescription = 'Available for home delivery or local pickup';
+    }
+
+    let estimatedShippingDays: number | null = null;
+    if (item.estimateShippingTime) {
+      const match = String(item.estimateShippingTime).match(/\d+/);
+      if (match) {
+        estimatedShippingDays = parseInt(match[0], 10);
+      }
+    }
+
+    let pickupLocation: string | null = null;
+    if (item.shippingOption === 'local_pick' || item.shippingOption === 'both') {
+      pickupLocation = [item.pickupAddress, item.pickUpCity].filter(Boolean).join(', ') || item.pickupAddress || null;
+    }
+
+    const currency = getUserCurrency(item.user?.country, item.closet?.location);
+
+    return {
+      id: item.id,
+      name: item.name,
+      price: item.price,
+      currency,
+      images: item.images || [],
+      description: item.description || '',
+      condition: formattedCondition,
+      brand: item.brand ?? null,
+      category: item.category,
+      quantityAvailable: item.quantity,
+      shippingOption: formattedShippingOption,
+      shippingDescription,
+      shippingFee: item.shippingFee ?? 0,
+      estimatedShippingDays,
+      pickupLocation,
+      isWinner,
+      winnerPct,
+      totalVotes,
+      battleId,
+      battleTitle,
+      closet: {
+        id: item.closet?.id ?? item.closetId,
+        displayName: item.user?.displayName || item.user?.userName || '',
+        shopName: item.closet?.shopName ?? '',
+        userName: item.user?.userName ?? '',
+        avatarUrl: item.user?.image || item.user?.profile || item.closet?.shopLogo || null,
+      },
+    };
   }
 
   async findItemById(userId: string, itemId: string) {
