@@ -16,6 +16,7 @@ import { CommentOnPostDto, GetCommentListOnPostDto, CommentDeleteDto, ReactOnCom
 import { SendMessageDto } from './dto/send-message.dto';
 import { ChatStatusUpdateDto } from './dto/chat-status-update.dto';
 import { HideChatDto } from './dto/hide-chat.dto';
+import { DeleteConversationDto } from './dto/delete-conversation.dto';
 import { PinPostDto, UnpinPostDto } from './dto/pin-post.dto';
 import { GetPostTrustScoreDto, PostTrustVoteDto, RemovePostTrustVoteDto } from './dto/post-trust-vote.dto';
 import { POST_TYPES } from './dto/post-types';
@@ -709,6 +710,19 @@ export class PostController {
   async unhideChat(@Req() req: Request, @Body(new ValidationPipe({ whitelist: true })) dto: HideChatDto) {
     const userId = (req.user as any).userId;
     return this.postService.unhideChat(dto.chatId, userId);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @Post('deleteConversation')
+  @ApiOperation({ summary: 'Delete conversation for current user (soft delete; permanently deletes when both users delete)' })
+  @ApiBody({ type: DeleteConversationDto })
+  async deleteConversation(
+    @Req() req: Request,
+    @Body(new ValidationPipe({ whitelist: true, transform: true })) dto: DeleteConversationDto,
+  ) {
+    const userId = (req.user as any).userId;
+    return this.postService.deleteConversation(userId, dto.conversationId, dto.type);
   }
 
 }

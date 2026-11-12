@@ -1,6 +1,7 @@
-import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { uploadBufferToS3, uploadFileToS3, uploadImageToS3 } from '../common/s3.util';
+import { ChatConversationType } from './dto/delete-conversation.dto';
 import {
   FollowStatus,
   MarketplaceBattleBoostStatus,
@@ -4812,6 +4813,15 @@ export class PostService {
           receiverId,
         },
       });
+    } else if (chatBox.hiddenBy && chatBox.hiddenBy.length > 0) {
+      const updatedHiddenBy = chatBox.hiddenBy.filter(id => id !== senderId && id !== receiverId);
+      if (updatedHiddenBy.length !== chatBox.hiddenBy.length) {
+        await this.prisma.chatBox.update({
+          where: { id: chatBox.id },
+          data: { hiddenBy: updatedHiddenBy },
+        });
+        chatBox.hiddenBy = updatedHiddenBy;
+      }
     }
 
     const conversation = await this.prisma.conversation.create({
@@ -5072,6 +5082,11 @@ export class PostService {
           { senderId: userId },
           { receiverId: userId },
         ],
+        NOT: {
+          hiddenBy: {
+            has: userId,
+          },
+        },
       },
       include: {
         sender: {
@@ -5484,6 +5499,168 @@ export class PostService {
     });
 
     return { message: 'Chat unhidden successfully' };
+  }
+
+  async deleteConversation(userId: string, conversationId: string, type: ChatConversationType | string) {
+    if (!userId) throw new UnauthorizedException('User not authenticated');
+    if (!conversationId) throw new BadRequestException('conversationId is required');
+    if (!type) throw new BadRequestException('type is required (NORMAL or CLOSET)');
+
+    const normalizedType = String(type).trim().toUpperCase();
+
+    if (normalizedType === ChatConversationType.NORMAL) {
+      // 1. Locate ChatBox (either directly by id or by conversation message id)
+      let chatBox = await this.prisma.chatBox.findUnique({
+        where: { id: conversationId },
+      });
+
+      if (!chatBox) {
+        const convRecord = await this.prisma.conversation.findUnique({
+          where: { id: conversationId },
+          select: { chatId: true },
+        });
+        if (convRecord?.chatId) {
+          chatBox = await this.prisma.chatBox.findUnique({
+            where: { id: convRecord.chatId },
+          });
+        }
+      }
+
+      if (!chatBox) {
+        throw new NotFoundException('Conversation not found');
+      }
+
+      // 2. Authorization check
+      if (chatBox.senderId !== userId && chatBox.receiverId !== userId) {
+        throw new UnauthorizedException('You are not authorized to delete this conversation');
+      }
+
+      const targetChatId = chatBox.id;
+      const currentHiddenBy = chatBox.hiddenBy || [];
+      const updatedHiddenBy = Array.from(new Set([...currentHiddenBy, userId]));
+
+      // Check if both participants have now deleted/hidden this conversation
+      const bothDeleted =
+        updatedHiddenBy.includes(chatBox.senderId) &&
+        updatedHiddenBy.includes(chatBox.receiverId);
+
+      if (bothDeleted) {
+        // Both users deleted: permanently remove from database
+        await this.prisma.$transaction([
+          this.prisma.conversation.deleteMany({
+            where: { chatId: targetChatId },
+          }),
+          this.prisma.chatBox.delete({
+            where: { id: targetChatId },
+          }),
+        ]);
+      } else {
+        // Soft delete: hide only for the deleting user
+        await this.prisma.chatBox.update({
+          where: { id: targetChatId },
+          data: { hiddenBy: updatedHiddenBy },
+        });
+      }
+
+      // Socket notification to the deleting user so their UI removes the conversation
+      if (this.io && this.connectedUsers) {
+        const mySocketId = this.connectedUsers.get(userId);
+        if (mySocketId) {
+          this.io.to(mySocketId).emit('conversationDeleted', {
+            chatId: targetChatId,
+            conversationId: targetChatId,
+            type: 'NORMAL',
+            deletedBy: userId,
+          });
+        }
+      }
+
+      return {
+        success: true,
+        message: bothDeleted
+          ? 'Conversation permanently deleted'
+          : 'Conversation deleted successfully for user',
+        conversationId: targetChatId,
+        type: 'NORMAL',
+      };
+    } else if (normalizedType === ChatConversationType.CLOSET) {
+      // 1. Locate ClosetChatThread (either directly by thread id or by message id)
+      let thread = await this.prisma.closetChatThread.findUnique({
+        where: { id: conversationId },
+      });
+
+      if (!thread) {
+        const msg = await this.prisma.closetChatMessage.findUnique({
+          where: { id: conversationId },
+          select: { threadId: true },
+        });
+        if (msg?.threadId) {
+          thread = await this.prisma.closetChatThread.findUnique({
+            where: { id: msg.threadId },
+          });
+        }
+      }
+
+      if (!thread) {
+        throw new NotFoundException('Closet chat thread not found');
+      }
+
+      // 2. Authorization check
+      if (thread.buyerId !== userId && thread.sellerId !== userId) {
+        throw new UnauthorizedException('You are not authorized to delete this closet chat');
+      }
+
+      const targetThreadId = thread.id;
+      const currentHiddenBy = thread.hiddenBy || [];
+      const updatedHiddenBy = Array.from(new Set([...currentHiddenBy, userId]));
+
+      // Check if both buyer and seller have now deleted/hidden this thread
+      const bothDeleted =
+        updatedHiddenBy.includes(thread.buyerId) &&
+        updatedHiddenBy.includes(thread.sellerId);
+
+      if (bothDeleted) {
+        // Both users deleted: permanently remove from database
+        await this.prisma.$transaction([
+          this.prisma.closetChatMessage.deleteMany({
+            where: { threadId: targetThreadId },
+          }),
+          this.prisma.closetChatThread.delete({
+            where: { id: targetThreadId },
+          }),
+        ]);
+      } else {
+        // Soft delete: hide only for the deleting user
+        await this.prisma.closetChatThread.update({
+          where: { id: targetThreadId },
+          data: { hiddenBy: updatedHiddenBy },
+        });
+      }
+
+      // Socket notification to the deleting user so their UI removes the thread
+      if (this.io && this.connectedUsers) {
+        const mySocketId = this.connectedUsers.get(userId);
+        if (mySocketId) {
+          this.io.to(mySocketId).emit('conversationDeleted', {
+            threadId: targetThreadId,
+            conversationId: targetThreadId,
+            type: 'CLOSET',
+            deletedBy: userId,
+          });
+        }
+      }
+
+      return {
+        success: true,
+        message: bothDeleted
+          ? 'Closet chat permanently deleted'
+          : 'Closet chat conversation deleted successfully for user',
+        conversationId: targetThreadId,
+        type: 'CLOSET',
+      };
+    } else {
+      throw new BadRequestException('Invalid conversation type. Must be NORMAL or CLOSET');
+    }
   }
 
 }
