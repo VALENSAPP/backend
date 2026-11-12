@@ -142,21 +142,23 @@ export class BattleController {
 
   @Get('prediction/questions')
   @ApiQuery({ name: 'category', required: true, enum: PredictionCategory })
-  @ApiQuery({ name: 'subCategory', required: false, type: String, description: 'Sport type or subcategory (e.g. cricket, football, basketball, tennis)' })
-  @ApiQuery({ name: 'league', required: false, type: String, description: 'League or tournament (e.g. ipl, nba, nfl, premier-league, la-liga, ufc, f1)' })
+  @ApiQuery({ name: 'subCategory', required: false, type: String, description: 'Sport type or subcategory (e.g. cricket, football, basketball, tennis, american_football)' })
+  @ApiQuery({ name: 'league', required: false, type: String, description: 'League or tournament (e.g. nfl, brasileirao_serie_a, copa_do_brasil, premier-league, champions-league)' })
   @ApiQuery({ name: 'provider', required: false, enum: PredictionProvider })
+  @ApiQuery({ name: 'search', required: false, type: String, description: 'Optional keyword search (e.g. Flamengo, Chiefs, Trump)' })
   @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
   @ApiQuery({ name: 'limit', required: false, type: Number, example: 20 })
-  @ApiOperation({ summary: 'Get third-party prediction questions by category, sports subcategory, and league' })
+  @ApiOperation({ summary: 'Get third-party prediction questions by category, sports subcategory, league, or search' })
   async getPredictionQuestions(
     @Query('category') category: PredictionCategory,
     @Query('subCategory') subCategory?: string,
     @Query('league') league?: string,
     @Query('provider') provider?: PredictionProvider,
+    @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.battleService.listPredictionQuestions(category, provider, page, limit, subCategory, league);
+    return this.battleService.listPredictionQuestions(category, provider, page, limit, subCategory, league, search);
   }
 
   @UseGuards(AuthGuard('jwt'))

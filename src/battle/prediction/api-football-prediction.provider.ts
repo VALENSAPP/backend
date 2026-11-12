@@ -1,8 +1,6 @@
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PredictionCategory, PredictionProvider } from '@prisma/client';
-import * as https from 'node:https';
-import * as http from 'node:http';
 import { PredictionMarket, PredictionMarketStatus, PredictionProviderClient } from './prediction-provider.types';
 
 export interface LeagueConfig {
@@ -12,11 +10,19 @@ export interface LeagueConfig {
 }
 
 export const BRAZIL_LEAGUE_MAP: Record<string, LeagueConfig> = {
+  // CBF National Divisions
   BRASILEIRAO_SERIE_A: { id: 71, name: 'Serie A', country: 'Brazil' },
   BRASILEIRAO_SERIE_B: { id: 72, name: 'Serie B', country: 'Brazil' },
   BRASILEIRAO_SERIE_C: { id: 75, name: 'Serie C', country: 'Brazil' },
   BRASILEIRAO_SERIE_D: { id: 76, name: 'Serie D', country: 'Brazil' },
+
+  // CBF National Knockouts & Supercups
   COPA_DO_BRASIL: { id: 73, name: 'Copa Do Brasil', country: 'Brazil' },
+  SUPERCOPA_DO_BRASIL: { id: 632, name: 'Supercopa do Brasil', country: 'Brazil' },
+  COPA_DO_NORDESTE: { id: 612, name: 'Copa do Nordeste', country: 'Brazil' },
+  COPA_VERDE: { id: 635, name: 'Copa Verde', country: 'Brazil' },
+
+  // State Championships (Estaduais)
   PAULISTA_A1: { id: 475, name: 'Paulista - A1', country: 'Brazil' },
   PAULISTA_A2: { id: 476, name: 'Paulista - A2', country: 'Brazil' },
   CARIOCA_A1: { id: 624, name: 'Carioca - 1', country: 'Brazil' },
@@ -29,20 +35,34 @@ export const BRAZIL_LEAGUE_MAP: Record<string, LeagueConfig> = {
   CATARINENSE_1: { id: 604, name: 'Catarinense - 1', country: 'Brazil' },
   PERNAMBUCANO_1: { id: 622, name: 'Pernambucano - 1', country: 'Brazil' },
   GOIANO_1: { id: 628, name: 'Goiano - 1', country: 'Brazil' },
-  COPA_DO_NORDESTE: { id: 612, name: 'Copa do Nordeste', country: 'Brazil' },
-  SUPERCOPA_DO_BRASIL: { id: 632, name: 'Supercopa do Brasil', country: 'Brazil' },
 };
 
 export const GLOBAL_LEAGUE_MAP: Record<string, LeagueConfig> = {
   ...BRAZIL_LEAGUE_MAP,
-  PREMIER_LEAGUE: { id: 39, name: 'Premier League', country: 'England' },
+
+  // South American Continental Competitions
+  COPA_LIBERTADORES: { id: 13, name: 'Copa Libertadores', country: 'South America' },
+  COPA_SUDAMERICANA: { id: 11, name: 'Copa Sudamericana', country: 'South America' },
+  RECOPA_SUDAMERICANA: { id: 541, name: 'Recopa Sudamericana', country: 'South America' },
+
+  // International Tournaments & National Teams
+  WORLD_CUP_QUALIFIERS_CONMEBOL: { id: 32, name: 'World Cup - Qualification South America', country: 'World' },
+  WORLD_CUP_QUALIFIERS_UEFA: { id: 34, name: 'World Cup - Qualification Europe', country: 'World' },
+  COPA_AMERICA: { id: 9, name: 'Copa America', country: 'World' },
+  UEFA_NATIONS_LEAGUE: { id: 5, name: 'UEFA Nations League', country: 'World' },
+  INTERNATIONAL_FRIENDLIES: { id: 10, name: 'Friendlies', country: 'World' },
+  FIFA_CLUB_WORLD_CUP: { id: 15, name: 'FIFA Club World Cup', country: 'World' },
+
+  // European & Global Club Competitions
   CHAMPIONS_LEAGUE: { id: 2, name: 'UEFA Champions League', country: 'World' },
+  EUROPA_LEAGUE: { id: 3, name: 'UEFA Europa League', country: 'World' },
+  CONFERENCE_LEAGUE: { id: 848, name: 'UEFA Europa Conference League', country: 'World' },
+  PREMIER_LEAGUE: { id: 39, name: 'Premier League', country: 'England' },
   LA_LIGA: { id: 140, name: 'La Liga', country: 'Spain' },
   SERIE_A: { id: 135, name: 'Serie A', country: 'Italy' },
   BUNDESLIGA: { id: 78, name: 'Bundesliga', country: 'Germany' },
+  LIGUE_1: { id: 61, name: 'Ligue 1', country: 'France' },
   MLS: { id: 253, name: 'Major League Soccer', country: 'USA' },
-  COPA_LIBERTADORES: { id: 13, name: 'Copa Libertadores', country: 'South America' },
-  COPA_SUDAMERICANA: { id: 11, name: 'Copa Sudamericana', country: 'South America' },
 };
 
 interface CacheEntry {
@@ -57,8 +77,9 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
 
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly nflBaseUrl = 'https://v1.american-football.api-sports.io';
   private readonly cache = new Map<string, CacheEntry>();
-  private readonly cacheTtlMs = 5 * 60 * 1000; // 5 minutes cache to preserve quota
+  private readonly cacheTtlMs = 15 * 60 * 1000; // 15 minutes cache to preserve 100 requests/day quota
 
   constructor(private readonly configService: ConfigService) {
     this.apiKey = (
@@ -88,16 +109,19 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
       return [];
     }
 
+    const cleanSubCat = (subCategory || '').trim().toUpperCase();
+    const cleanLeague = (league || '').trim().toUpperCase();
+
+    // 1. If user explicitly requested American Football or NFL, query API-Sports NFL
+    if (cleanSubCat === 'AMERICAN_FOOTBALL' || cleanLeague === 'NFL') {
+      return this.listNflMarkets();
+    }
+
     const normalizedLeague = this.normalizeLeagueKey(league);
     const fixtures: any[] = [];
 
-    if (normalizedLeague && GLOBAL_LEAGUE_MAP[normalizedLeague]) {
-      const leagueFixtures = await this.fetchLeagueFixtures(GLOBAL_LEAGUE_MAP[normalizedLeague].id);
-      fixtures.push(...leagueFixtures);
-    }
-
-    // Also fetch date-based upcoming fixtures across next 3 days
-    const dateStrings = this.getUpcomingDateStrings(3);
+    // 2. Fetch date-based upcoming fixtures across next 2 days (today and tomorrow, guaranteed on all API-Sports plans)
+    const dateStrings = this.getUpcomingDateStrings(2);
     for (const dateStr of dateStrings) {
       const dayFixtures = await this.fetchFixturesByDate(dateStr);
       fixtures.push(...dayFixtures);
@@ -120,6 +144,111 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
     return this.sortMarkets(markets);
   }
 
+  private async listNflMarkets(): Promise<PredictionMarket[]> {
+    const cacheKey = 'nfl_upcoming_games';
+    const cached = this.getFromCache(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const currentYear = new Date().getFullYear();
+      const seasons = [currentYear, currentYear - 1];
+      let games: any[] = [];
+
+      for (const season of seasons) {
+        const url = `${this.nflBaseUrl}/games?league=1&season=${season}`;
+        const resp = await this.fetchJson(url);
+        if (Array.isArray(resp?.response) && resp.response.length > 0) {
+          games = resp.response;
+          break;
+        }
+      }
+
+      if (games.length === 0) {
+        return [];
+      }
+
+      const now = Date.now();
+      // Filter for future games or recent games
+      const markets = games
+        .map((g) => this.nflGameToPredictionMarket(g))
+        .filter((m): m is PredictionMarket => !!m)
+        .filter((m) => {
+          if (m.status === 'OPEN' && m.closeTime && m.closeTime.getTime() > now) return true;
+          return false;
+        });
+
+      markets.sort((a, b) => {
+        const timeA = a.closeTime ? a.closeTime.getTime() : Number.MAX_SAFE_INTEGER;
+        const timeB = b.closeTime ? b.closeTime.getTime() : Number.MAX_SAFE_INTEGER;
+        return timeA - timeB;
+      });
+
+      this.setInCache(cacheKey, markets, 30 * 60 * 1000);
+      return markets;
+    } catch (e: any) {
+      this.logger.error(`Error fetching NFL games: ${e.message}`);
+      return [];
+    }
+  }
+
+  private nflGameToPredictionMarket(gameData: any): PredictionMarket | null {
+    const game = gameData?.game;
+    const teams = gameData?.teams;
+    if (!game?.id || !teams?.home?.name || !teams?.away?.name) {
+      return null;
+    }
+
+    const homeTeam = String(teams.home.name).trim();
+    const awayTeam = String(teams.away.name).trim();
+    const question = `${homeTeam} vs ${awayTeam} - Game Winner`;
+    const options = [homeTeam, awayTeam];
+
+    let closeTime: Date | null = null;
+    if (game.date?.timestamp) {
+      closeTime = new Date(game.date.timestamp * 1000);
+    } else if (game.date?.date) {
+      const timeStr = game.date?.time || '00:00';
+      closeTime = new Date(`${game.date.date}T${timeStr}:00Z`);
+    }
+
+    const statusShort = String(game.status?.short || '').toUpperCase();
+    let status: PredictionMarketStatus = 'UNKNOWN';
+    let resultSide: string | null = null;
+
+    if (['FT', 'AOT'].includes(statusShort)) {
+      status = 'SETTLED';
+      const homeScore = Number(gameData?.scores?.home?.total ?? 0);
+      const awayScore = Number(gameData?.scores?.away?.total ?? 0);
+      if (homeScore > awayScore) resultSide = homeTeam;
+      else if (awayScore > homeScore) resultSide = awayTeam;
+      else resultSide = 'Draw';
+    } else if (['NS', 'TBD'].includes(statusShort)) {
+      status = 'OPEN';
+    } else {
+      status = 'CLOSED';
+    }
+
+    const icon = gameData?.league?.logo || null;
+    const image = gameData?.teams?.home?.logo || null;
+
+    return {
+      provider: this.provider,
+      externalMarketId: `nfl:${game.id}`,
+      externalEventId: `nfl:${game.id}`,
+      category: PredictionCategory.SPORTS,
+      subCategory: 'AMERICAN_FOOTBALL',
+      league: 'NFL',
+      question,
+      options,
+      closeTime: closeTime && !Number.isNaN(closeTime.getTime()) ? closeTime : null,
+      status,
+      resultSide,
+      icon,
+      image,
+      raw: gameData,
+    };
+  }
+
   isBrazilMarket(market: PredictionMarket): boolean {
     if (market.league && BRAZIL_LEAGUE_MAP[market.league]) {
       return true;
@@ -131,23 +260,24 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
     }
     const leagueName = String(raw?.league?.name || '').toLowerCase();
     if (
-      leagueName.includes('brasil') ||
-      leagueName.includes('brazil') ||
-      leagueName.includes('brasileir') ||
-      leagueName.includes('paulista') ||
-      leagueName.includes('carioca') ||
-      leagueName.includes('mineiro') ||
-      leagueName.includes('gaúcho') ||
-      leagueName.includes('gaucho') ||
-      leagueName.includes('baiano') ||
-      leagueName.includes('cearense') ||
-      leagueName.includes('paranaense') ||
-      leagueName.includes('catarinense') ||
-      leagueName.includes('pernambucano') ||
-      leagueName.includes('goiano') ||
-      leagueName.includes('copa do brasil') ||
-      leagueName.includes('copa do nordeste') ||
-      leagueName.includes('supercopa do brasil')
+      leagueName.includes('brasil')
+      || leagueName.includes('brazil')
+      || leagueName.includes('brasileir')
+      || leagueName.includes('paulista')
+      || leagueName.includes('carioca')
+      || leagueName.includes('mineiro')
+      || leagueName.includes('gaúcho')
+      || leagueName.includes('gaucho')
+      || leagueName.includes('baiano')
+      || leagueName.includes('cearense')
+      || leagueName.includes('paranaense')
+      || leagueName.includes('catarinense')
+      || leagueName.includes('pernambucano')
+      || leagueName.includes('goiano')
+      || leagueName.includes('copa do brasil')
+      || leagueName.includes('copa do nordeste')
+      || leagueName.includes('supercopa do brasil')
+      || leagueName.includes('copa verde')
     ) {
       return true;
     }
@@ -181,18 +311,40 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
       return null;
     }
 
-    const fixtureId = externalMarketId.replace(/^[a-zA-Z_-]+:/, '').trim();
-    if (!fixtureId) return null;
+    const cleanId = String(externalMarketId || '').trim();
+    if (!cleanId) return null;
 
+    // Handle NFL games
+    if (cleanId.startsWith('nfl:')) {
+      const gameId = cleanId.replace(/^nfl:/, '');
+      const cacheKey = `nfl_game_${gameId}`;
+      let gameData = this.getFromCache(cacheKey);
+
+      if (!gameData) {
+        const url = `${this.nflBaseUrl}/games?id=${encodeURIComponent(gameId)}`;
+        const resp = await this.fetchJson(url);
+        gameData = Array.isArray(resp?.response) ? resp.response[0] : null;
+        if (gameData) {
+          const isFinished = ['FT', 'AOT'].includes(gameData?.game?.status?.short);
+          this.setInCache(cacheKey, gameData, isFinished ? 60 * 60 * 1000 : 2 * 60 * 1000);
+        }
+      }
+
+      if (!gameData) return null;
+      return this.nflGameToPredictionMarket(gameData);
+    }
+
+    // Handle Soccer fixtures
+    const fixtureId = cleanId.replace(/^[a-zA-Z_-]+:/, '').trim();
     try {
       const cacheKey = `fixture_${fixtureId}`;
       let fixtureData = this.getFromCache(cacheKey);
 
       if (!fixtureData) {
-        const response = await this.fetchJson(`/fixtures?id=${encodeURIComponent(fixtureId)}`);
+        const url = `${this.baseUrl}/fixtures?id=${encodeURIComponent(fixtureId)}`;
+        const response = await this.fetchJson(url);
         fixtureData = Array.isArray(response?.response) ? response.response[0] : null;
         if (fixtureData) {
-          // If match is finished, cache longer (1 hour); if live/not started, cache 1 minute
           const isFinished = ['FT', 'AET', 'PEN'].includes(fixtureData?.fixture?.status?.short);
           this.setInCache(cacheKey, fixtureData, isFinished ? 60 * 60 * 1000 : 60 * 1000);
         }
@@ -206,61 +358,43 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
     }
   }
 
-  private async fetchLeagueFixtures(leagueId: number): Promise<any[]> {
-    const currentYear = new Date().getFullYear();
-    const cacheKey = `league_${leagueId}_${currentYear}`;
-    const cached = this.getFromCache(cacheKey);
-    if (cached) return cached;
-
-    try {
-      // First try next 15 fixtures for this league
-      const nextResponse = await this.fetchJson(`/fixtures?league=${leagueId}&season=${currentYear}&next=15`);
-      let list = Array.isArray(nextResponse?.response) ? nextResponse.response : [];
-
-      if (list.length === 0) {
-        // Fallback: check upcoming dates
-        const dateStrings = this.getUpcomingDateStrings(5);
-        const aggregated: any[] = [];
-        for (const dateStr of dateStrings) {
-          const dateResp = await this.fetchJson(`/fixtures?league=${leagueId}&date=${dateStr}`);
-          if (Array.isArray(dateResp?.response)) {
-            aggregated.push(...dateResp.response);
-          }
-        }
-        list = aggregated;
-      }
-
-      this.setInCache(cacheKey, list, this.cacheTtlMs);
-      return list;
-    } catch (e: any) {
-      this.logger.error(`Error fetching league fixtures for ${leagueId}: ${e.message}`);
-      return [];
-    }
-  }
-
   private async fetchFixturesByDate(dateStr: string): Promise<any[]> {
     const cacheKey = `fixtures_date_${dateStr}`;
     const cached = this.getFromCache(cacheKey);
     if (cached) return cached;
 
     try {
-      const response = await this.fetchJson(`/fixtures?date=${dateStr}`);
+      const url = `${this.baseUrl}/fixtures?date=${dateStr}`;
+      const response = await this.fetchJson(url);
       const rawList: any[] = Array.isArray(response?.response) ? response.response : [];
 
-      // Prioritize Brazilian fixtures or top supported leagues
+      // Prioritize Brazilian fixtures, continental cups, and top global matches
       const filtered = rawList.filter((item) => {
         const country = String(item?.league?.country || '').toLowerCase();
         const leagueName = String(item?.league?.name || '').toLowerCase();
-        return country === 'brazil'
+        return (
+          country === 'brazil'
+          || country === 'brasil'
           || country === 'world'
+          || country === 'south america'
           || country === 'england'
           || country === 'spain'
           || country === 'italy'
           || country === 'germany'
+          || country === 'france'
           || leagueName.includes('serie a')
+          || leagueName.includes('serie b')
           || leagueName.includes('copa')
           || leagueName.includes('paulista')
-          || leagueName.includes('carioca');
+          || leagueName.includes('carioca')
+          || leagueName.includes('mineiro')
+          || leagueName.includes('gaúcho')
+          || leagueName.includes('gaucho')
+          || leagueName.includes('libertadores')
+          || leagueName.includes('sudamericana')
+          || leagueName.includes('champions league')
+          || leagueName.includes('premier league')
+        );
       });
 
       this.setInCache(cacheKey, filtered, this.cacheTtlMs);
@@ -292,6 +426,9 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
     const { status, resultSide } = this.resolveStatusAndWinner(statusShort, teams, fixtureData?.goals);
     const leagueKey = this.inferLeagueKey(league);
 
+    const icon = league?.logo || null;
+    const image = teams?.home?.logo || null;
+
     return {
       provider: this.provider,
       externalMarketId: String(fixture.id),
@@ -304,6 +441,8 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
       closeTime: closeTime && !Number.isNaN(closeTime.getTime()) ? closeTime : null,
       status,
       resultSide,
+      icon,
+      image,
       raw: fixtureData,
     };
   }
@@ -383,6 +522,8 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
     if (clean.includes('PREMIER')) return 'PREMIER_LEAGUE';
     if (clean.includes('CHAMPIONS')) return 'CHAMPIONS_LEAGUE';
     if (clean.includes('LA_LIGA')) return 'LA_LIGA';
+    if (clean.includes('LIBERTADORES')) return 'COPA_LIBERTADORES';
+    if (clean.includes('SUDAMERICANA')) return 'COPA_SUDAMERICANA';
 
     return clean;
   }
@@ -430,55 +571,34 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
     });
   }
 
-  private async fetchJson(path: string): Promise<any> {
-    const fullUrl = `${this.baseUrl}${path}`;
-    return new Promise((resolve, reject) => {
-      const isHttps = fullUrl.startsWith('https:');
-      const client = isHttps ? https : http;
+  private async fetchJson(url: string): Promise<any> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
 
-      const req = client.get(
-        fullUrl,
-        {
-          family: 4,
-          timeout: 10000,
-          headers: {
-            Accept: 'application/json',
-            'x-apisports-key': this.apiKey,
-            'User-Agent': 'Valens-App/1.0',
-          },
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          'x-apisports-key': this.apiKey,
+          'User-Agent': 'Valens-App/1.0',
         },
-        (res) => {
-          let data = '';
-          res.setEncoding('utf8');
-          res.on('data', (chunk) => {
-            data += chunk;
-          });
-          res.on('end', () => {
-            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed?.errors && Object.keys(parsed.errors).length > 0 && !Array.isArray(parsed.errors)) {
-                  this.logger.warn(`API-Sports returned errors: ${JSON.stringify(parsed.errors)}`);
-                }
-                resolve(parsed);
-              } catch (e: any) {
-                reject(new ServiceUnavailableException(`Failed to parse API-Football response: ${e.message}`));
-              }
-            } else {
-              reject(new ServiceUnavailableException(`API-Football provider returned HTTP ${res.statusCode}`));
-            }
-          });
-        },
-      );
-
-      req.on('error', (err: any) => {
-        reject(new ServiceUnavailableException(`API-Football provider unavailable: ${err?.message || err}`));
       });
 
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new ServiceUnavailableException('API-Football provider request timed out'));
-      });
-    });
+      clearTimeout(timer);
+
+      if (response.ok) {
+        const parsed = await response.json();
+        if (parsed?.errors && Object.keys(parsed.errors).length > 0 && !Array.isArray(parsed.errors)) {
+          this.logger.warn(`API-Sports returned errors: ${JSON.stringify(parsed.errors)}`);
+        }
+        return parsed;
+      }
+
+      throw new ServiceUnavailableException(`API-Sports returned HTTP ${response.status}`);
+    } catch (err: any) {
+      clearTimeout(timer);
+      throw new ServiceUnavailableException(`API-Sports request failed: ${err?.message || err}`);
+    }
   }
 }

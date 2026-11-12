@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import {
@@ -42,6 +42,8 @@ const BATTLE_PUBLIC_USER_SELECT = {
 
 @Injectable()
 export class BattleService {
+  private readonly logger = new Logger(BattleService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
@@ -471,21 +473,33 @@ export class BattleService {
   }
 
   getPredictionCategories() {
-    return Object.values(PredictionCategory);
+    return [
+      PredictionCategory.SPORTS,
+      PredictionCategory.POLITICS,
+      PredictionCategory.CRYPTO,
+      PredictionCategory.TECH_AI,
+      PredictionCategory.POP_CULTURE,
+      PredictionCategory.FINANCE,
+      PredictionCategory.GLOBAL_AFFAIRS,
+      PredictionCategory.SCIENCE,
+      PredictionCategory.ENTERTAINMENT,
+      PredictionCategory.ECONOMY,
+      PredictionCategory.ELECTIONS,
+    ];
   }
 
   getPredictionSportsCategories() {
     return [
       'ALL',
-      'CRICKET',
-      'FOOTBALL',
-      'BASKETBALL',
-      'AMERICAN_FOOTBALL',
+      'FOOTBALL',          // Soccer / CBF Brasil
+      'AMERICAN_FOOTBALL', // NFL
+      'BASKETBALL',        // NBA
+      'CRICKET',           // IPL
+      'BASEBALL',          // MLB
+      'MMA_BOXING',        // UFC
+      'FORMULA1',          // F1
       'TENNIS',
-      'BASEBALL',
-      'MMA_BOXING',
-      'FORMULA1',
-      'HOCKEY',
+      'HOCKEY',            // NHL
       'ESPORTS',
       'OTHER',
     ];
@@ -500,8 +514,13 @@ export class BattleService {
         'BRASILEIRAO_SERIE_C',
         'BRASILEIRAO_SERIE_D',
         'COPA_DO_BRASIL',
+        'SUPERCOPA_DO_BRASIL',
+        'COPA_DO_NORDESTE',
+        'COPA_VERDE',
         'PAULISTA_A1',
+        'PAULISTA_A2',
         'CARIOCA_A1',
+        'CARIOCA_A2',
         'MINEIRO_1',
         'GAUCHO_1',
         'BAIANO_1',
@@ -510,17 +529,23 @@ export class BattleService {
         'CATARINENSE_1',
         'PERNAMBUCANO_1',
         'GOIANO_1',
-        'COPA_DO_NORDESTE',
-        'PREMIER_LEAGUE',
+        'COPA_LIBERTADORES',
+        'COPA_SUDAMERICANA',
+        'RECOPA_SUDAMERICANA',
         'CHAMPIONS_LEAGUE',
+        'EUROPA_LEAGUE',
+        'CONFERENCE_LEAGUE',
+        'UEFA_NATIONS_LEAGUE',
+        'WORLD_CUP_QUALIFIERS_CONMEBOL',
+        'WORLD_CUP_QUALIFIERS_UEFA',
+        'COPA_AMERICA',
+        'FIFA_WORLD_CUP',
+        'PREMIER_LEAGUE',
         'LA_LIGA',
         'SERIE_A',
         'BUNDESLIGA',
+        'LIGUE_1',
         'MLS',
-        'EUROPA_LEAGUE',
-        'FIFA_WORLD_CUP',
-        'COPA_LIBERTADORES',
-        'COPA_SUDAMERICANA',
       ],
       BASKETBALL: ['NBA', 'WNBA', 'EUROLEAGUE'],
       AMERICAN_FOOTBALL: ['NFL', 'NCAA_FOOTBALL'],
@@ -528,6 +553,7 @@ export class BattleService {
       MMA_BOXING: ['UFC', 'ONE_CHAMPIONSHIP'],
       FORMULA1: ['FORMULA_1', 'NASCAR'],
       HOCKEY: ['NHL'],
+      ESPORTS: ['DOTA_2', 'CS_GO', 'LEAGUE_OF_LEGENDS', 'VALORANT'],
     };
 
     if (subCategory) {
@@ -548,47 +574,73 @@ export class BattleService {
     limitInput?: string | number,
     subCategory?: string,
     league?: string,
+    search?: string,
   ) {
     if (!category) throw new BadRequestException('Prediction category required');
     const pagination = this.parsePredictionQuestionPagination(pageInput, limitInput);
 
+    let rawMarkets: PredictionMarket[] = [];
+
     if (provider) {
       const client = this.getPredictionProvider(provider);
-      const markets = await client.listMarkets(category, subCategory, league);
-      const sortedMarkets = this.sortPredictionMarkets(markets);
-      return this.paginatePredictionMarkets(sortedMarkets, pagination.page, pagination.limit);
-    }
+      rawMarkets = await client.listMarkets(category, subCategory, league);
+    } else if (category === PredictionCategory.SPORTS) {
+      // Query providers in parallel to aggregate Sports, NFL, and CBF Brasil soccer
+      const results = await Promise.allSettled([
+        this.getPredictionProvider(PredictionProvider.API_FOOTBALL).listMarkets(category, subCategory, league),
+        this.getPredictionProvider(PredictionProvider.POLYMARKET).listMarkets(category, subCategory, league),
+      ]);
 
-    const providerOrder = category === PredictionCategory.SPORTS
-      ? [PredictionProvider.API_FOOTBALL, PredictionProvider.POLYMARKET, PredictionProvider.MANIFOLD]
-      : [PredictionProvider.POLYMARKET, PredictionProvider.MANIFOLD];
-
-    const errors: string[] = [];
-    let hadReachableProvider = false;
-
-    for (const currentProvider of providerOrder) {
-      try {
-        const markets = await this.getPredictionProvider(currentProvider).listMarkets(category, subCategory, league);
-        hadReachableProvider = true;
-        if (markets.length > 0) {
-          const sortedMarkets = this.sortPredictionMarkets(markets);
-          return this.paginatePredictionMarkets(sortedMarkets, pagination.page, pagination.limit);
+      const seenIds = new Set<string>();
+      for (const res of results) {
+        if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+          for (const m of res.value) {
+            const key = `${m.provider}_${m.externalMarketId}`;
+            if (!seenIds.has(key)) {
+              seenIds.add(key);
+              rawMarkets.push(m);
+            }
+          }
         }
-        errors.push(`${currentProvider}: no open future markets`);
-      } catch (error: any) {
-        errors.push(`${currentProvider}: ${error?.message || 'unavailable'}`);
+      }
+
+      // If both API_FOOTBALL and POLYMARKET returned 0, fallback to MANIFOLD
+      if (rawMarkets.length === 0) {
+        try {
+          const manifoldMarkets = await this.getPredictionProvider(PredictionProvider.MANIFOLD).listMarkets(category, subCategory, league);
+          rawMarkets.push(...manifoldMarkets);
+        } catch {
+          // ignore manifold error
+        }
+      }
+    } else {
+      // Non-sports categories: Polymarket primary, Manifold fallback
+      try {
+        rawMarkets = await this.getPredictionProvider(PredictionProvider.POLYMARKET).listMarkets(category, subCategory, league);
+      } catch (err: any) {
+        this.logger.warn(`Polymarket query failed for ${category}: ${err?.message}`);
+      }
+
+      if (rawMarkets.length === 0) {
+        try {
+          rawMarkets = await this.getPredictionProvider(PredictionProvider.MANIFOLD).listMarkets(category, subCategory, league);
+        } catch (err: any) {
+          this.logger.warn(`Manifold fallback failed for ${category}: ${err?.message}`);
+        }
       }
     }
 
-    if (hadReachableProvider) {
-      return this.paginatePredictionMarkets([], pagination.page, pagination.limit);
+    // Optional Search query filtering
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      rawMarkets = rawMarkets.filter((m) => {
+        const text = `${m.question} ${(m.options || []).join(' ')} ${m.league || ''} ${m.subCategory || ''}`.toLowerCase();
+        return text.includes(q);
+      });
     }
 
-    throw new ServiceUnavailableException({
-      message: 'Prediction providers are unavailable or returned no open future markets',
-      providersTried: providerOrder,
-      errors,
-    });
+    const sortedMarkets = this.sortPredictionMarkets(rawMarkets);
+    return this.paginatePredictionMarkets(sortedMarkets, pagination.page, pagination.limit);
   }
 
   private isBrazilPredictionMarket(market: PredictionMarket): boolean {

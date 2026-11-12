@@ -14,6 +14,10 @@ export interface PredictionMarket {
   closeTime?: Date | null;
   status: PredictionMarketStatus;
   resultSide?: string | null;
+  volume?: number | null;
+  outcomePrices?: number[] | null;
+  icon?: string | null;
+  image?: string | null;
   raw?: unknown;
 }
 

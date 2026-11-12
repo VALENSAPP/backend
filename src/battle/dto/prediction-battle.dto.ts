@@ -11,6 +11,21 @@ export class PredictionQuestionsQueryDto {
   @IsOptional()
   @IsEnum(PredictionProvider)
   provider?: PredictionProvider;
+
+  @ApiPropertyOptional({ description: 'Sports subcategory, e.g. FOOTBALL, AMERICAN_FOOTBALL, BASKETBALL' })
+  @IsOptional()
+  @IsString()
+  subCategory?: string;
+
+  @ApiPropertyOptional({ description: 'League or tournament slug, e.g. BRASILEIRAO_SERIE_A, NFL, PREMIER_LEAGUE' })
+  @IsOptional()
+  @IsString()
+  league?: string;
+
+  @ApiPropertyOptional({ description: 'Search keyword, e.g. team or match name' })
+  @IsOptional()
+  @IsString()
+  search?: string;
 }
 
 export class CreatePredictionBattleDto {
