@@ -956,6 +956,7 @@ model ClosetChatThread {
   sellerId      String
   closetId      String
   status        ClosetChatThreadStatus @default(ACTIVE)
+  hiddenBy      String[]               @default([])
   lastMessageAt DateTime?
   createdAt     DateTime               @default(now())
   updatedAt     DateTime               @updatedAt
