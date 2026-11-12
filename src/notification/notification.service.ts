@@ -295,21 +295,22 @@ export class NotificationService {
     const notificationCategory = this.getNotificationCategory(data);
 
     if (validDevices.length > 0) {
-      // Group devices by language so we translate accurately per device language
-      const languageGroups = new Map<string, string[]>();
+      // Group devices by language and deduplicate tokens so no device receives duplicate pushes
+      const languageGroups = new Map<string, Set<string>>();
       for (const dev of validDevices) {
         const lang = normalizeLanguage(dev.language || userFallbackLang || 'en');
         if (!languageGroups.has(lang)) {
-          languageGroups.set(lang, []);
+          languageGroups.set(lang, new Set<string>());
         }
-        languageGroups.get(lang)!.push(dev.fcmToken!.trim());
+        languageGroups.get(lang)!.add(dev.fcmToken!.trim());
       }
 
-      for (const [lang, tokens] of languageGroups.entries()) {
+      for (const [lang, tokensSet] of languageGroups.entries()) {
         const devTranslated = translateNotification(title, body, lang, data);
         const devTitle = devTranslated.title;
         const devBody = devTranslated.body;
         const payloadData = this.sanitizeDataForFcm(data, devTitle, devBody);
+        const tokens = Array.from(tokensSet);
 
         for (const token of tokens) {
           const message = {

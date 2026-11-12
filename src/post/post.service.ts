@@ -4390,7 +4390,6 @@ export class PostService {
       const receiverSocketId = this.connectedUsers.get(receiverUserId);
       if (receiverSocketId) {
         this.io.to(receiverSocketId).emit('newMessage', conversation);
-        this.io.to(receiverSocketId).emit('userConversationUpdate', conversation);
       }
     }
 
@@ -4747,6 +4746,41 @@ export class PostService {
       throw new BadRequestException('Cannot send message to yourself');
     }
 
+    const trimmedContent = message.trim();
+
+    // Idempotency check: prevent duplicate message if exact same content was sent within last 3 seconds
+    const recentDuplicate = await this.prisma.conversation.findFirst({
+      where: {
+        type: 'CHAT',
+        senderId,
+        receiverId,
+        content: trimmedContent,
+        createdAt: { gte: new Date(Date.now() - 3000) },
+      },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            userName: true,
+            displayName: true,
+            image: true,
+          },
+        },
+        receiver: {
+          select: {
+            id: true,
+            userName: true,
+            displayName: true,
+            image: true,
+          },
+        },
+      },
+    });
+
+    if (recentDuplicate) {
+      return recentDuplicate;
+    }
+
     // Verify both users exist before creating ChatBox
     const [sender, receiver] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: senderId } }),
@@ -4785,7 +4819,7 @@ export class PostService {
         type: 'CHAT',
         senderId,
         receiverId,
-        content: message.trim(),
+        content: trimmedContent,
         chatId: chatBox.id,
       },
       include: {
@@ -4813,7 +4847,7 @@ export class PostService {
       await this.notificationService.sendChatMessageNotification(
         senderId,
         receiverId,
-        message.trim(),
+        trimmedContent,
         conversation.id,
         chatBox.id,
       );
@@ -4821,12 +4855,11 @@ export class PostService {
       console.error('Failed to send chat message notification:', notificationError);
     }
 
-    // Real-time socket emission if receiver is online
+    // Real-time socket emission if receiver is online (single 'newMessage' event to avoid duplicates)
     if (this.io && this.connectedUsers) {
       const receiverSocketId = this.connectedUsers.get(receiverId);
       if (receiverSocketId) {
         this.io.to(receiverSocketId).emit('newMessage', conversation);
-        this.io.to(receiverSocketId).emit('userConversationUpdate', conversation);
       }
     }
 
