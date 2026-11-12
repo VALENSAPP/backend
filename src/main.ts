@@ -180,6 +180,7 @@ async function bootstrap() {
 
   // Socket.IO connection handling
   const connectedUsers = new Map<string, string>(); // userId -> socketId
+  postService.setSocketServer(io, connectedUsers);
 
   io.on('connection', (socket: Socket) => {
     const userId = socket.handshake.query.userId as string;
@@ -188,6 +189,47 @@ async function bootstrap() {
     if (userId) {
       connectedUsers.set(userId, socket.id);
     }
+
+    // Handle sendMessage via socket
+    socket.on('sendMessage', async (data: any) => {
+      try {
+        if (typeof data === 'string') {
+          data = JSON.parse(data);
+        }
+
+        const senderId = data?.senderId || userId;
+        const receiverId = data?.receiverId;
+        const message = data?.message;
+
+        if (!senderId) {
+          socket.emit('sendMessageError', { message: 'senderId required' });
+          return;
+        }
+
+        if (!receiverId) {
+          socket.emit('sendMessageError', { message: 'receiverId required' });
+          return;
+        }
+
+        if (!message || !String(message).trim()) {
+          socket.emit('sendMessageError', { message: 'message required' });
+          return;
+        }
+
+        const createdConversation = await postService.sendMessage(
+          senderId,
+          receiverId,
+          String(message).trim(),
+        );
+
+        socket.emit('messageSent', createdConversation);
+      } catch (error: any) {
+        console.error('sendMessage socket error:', error);
+        socket.emit('sendMessageError', {
+          message: error?.message || 'Failed to send message',
+        });
+      }
+    });
 
     // Handle getUserChatBox
     socket.on('getUserChatBox', async (data: any) => {

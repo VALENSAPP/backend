@@ -114,6 +114,20 @@ export const TITLE_MAP: Record<string, Partial<Record<string, string>>> = {
     pt: '💬 Novo Comentário',
     hi: '💬 नई टिप्पणी',
   },
+  '💬 New Message': {
+    es: '💬 Nuevo Mensaje',
+    fr: '💬 Nouveau Message',
+    it: '💬 Nuovo Messaggio',
+    pt: '💬 Nova Mensagem',
+    hi: '💬 नया संदेश',
+  },
+  'New Message': {
+    es: 'Nuevo Mensaje',
+    fr: 'Nouveau Message',
+    it: 'Nuovo Messaggio',
+    pt: 'Nova Mensagem',
+    hi: 'नया संदेश',
+  },
   'New Comment': {
     es: 'Nuevo Comentario',
     fr: 'Nouveau Commentaire',
@@ -801,6 +815,34 @@ export const PATTERN_RULES: PatternRule[] = [
       pt: (_, b) => ({
         title: '💬 Novo Comentário',
         body: `${b?.[1] || 'Alguém'} comentou na sua publicação: "${b?.[2] || ''}"`,
+      }),
+    },
+  },
+
+  // 7b. Chat Direct Message: '@username sent you a message: "..."' or '@username sent you a message'
+  {
+    titlePattern: /^(?:💬\s*)?(.*?)$/i,
+    bodyPattern: /^(.*?)\s+sent you a message(?::\s*"(.*)")?$/is,
+    translations: {
+      es: (t, b) => ({
+        title: t?.[0]?.startsWith('💬') ? `💬 ${t[0].replace(/^💬\s*/, '')}` : (t?.[0] || '💬 Nuevo Mensaje'),
+        body: b?.[2] ? `${b?.[1] || 'Alguien'} te envió un mensaje: "${b[2]}"` : `${b?.[1] || 'Alguien'} te envió un mensaje`,
+      }),
+      fr: (t, b) => ({
+        title: t?.[0]?.startsWith('💬') ? `💬 ${t[0].replace(/^💬\s*/, '')}` : (t?.[0] || '💬 Nouveau Message'),
+        body: b?.[2] ? `${b?.[1] || 'Quelqu\'un'} vous a envoyé un message : "${b[2]}"` : `${b?.[1] || 'Quelqu\'un'} vous a envoyé un message`,
+      }),
+      it: (t, b) => ({
+        title: t?.[0]?.startsWith('💬') ? `💬 ${t[0].replace(/^💬\s*/, '')}` : (t?.[0] || '💬 Nuovo Messaggio'),
+        body: b?.[2] ? `${b?.[1] || 'Qualcuno'} ti ha inviato un messaggio: "${b[2]}"` : `${b?.[1] || 'Qualcuno'} ti ha inviato un messaggio`,
+      }),
+      pt: (t, b) => ({
+        title: t?.[0]?.startsWith('💬') ? `💬 ${t[0].replace(/^💬\s*/, '')}` : (t?.[0] || '💬 Nova Mensagem'),
+        body: b?.[2] ? `${b?.[1] || 'Alguém'} enviou uma mensagem para você: "${b[2]}"` : `${b?.[1] || 'Alguém'} enviou uma mensagem para você`,
+      }),
+      hi: (t, b) => ({
+        title: t?.[0]?.startsWith('💬') ? `💬 ${t[0].replace(/^💬\s*/, '')}` : (t?.[0] || '💬 नया संदेश'),
+        body: b?.[2] ? `${b?.[1] || 'किसी'} ने आपको एक संदेश भेजा: "${b[2]}"` : `${b?.[1] || 'किसी'} ने आपको एक संदेश भेजा`,
       }),
     },
   },
@@ -3524,6 +3566,22 @@ export function reconstructEnglishFromMetadata(
         title: 'New chat message',
         body: 'You have a new message in your marketplace chat.',
       };
+    case 'chat_message': {
+      const user = data?.senderDisplayName || data?.senderUserName || 'Someone';
+      const preview = data?.message || '';
+      return {
+        title: `💬 ${user}`,
+        body: preview ? `${user} sent you a message: "${preview}"` : `${user} sent you a message`,
+      };
+    }
+    case 'chat_media': {
+      const user = data?.senderDisplayName || data?.senderUserName || 'Someone';
+      const mediaLabel = (data?.mediaType || 'post').toLowerCase();
+      return {
+        title: `💬 ${user}`,
+        body: `${user} shared a ${mediaLabel} with you`,
+      };
+    }
     case 'tokens_received': {
       const amount = data?.amount || '0';
       const sender = data?.senderName || 'a user';

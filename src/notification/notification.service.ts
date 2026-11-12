@@ -3373,6 +3373,114 @@ export class NotificationService {
     );
   }
 
+  async sendChatMessageNotification(
+    senderId: string,
+    receiverId: string,
+    messageContent: string,
+    conversationId?: string,
+    chatId?: string,
+  ): Promise<void> {
+    if (!senderId || !receiverId || senderId === receiverId) return;
+
+    const [sender, receiver] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: senderId },
+        select: { id: true, userName: true, displayName: true, image: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: receiverId },
+        select: { id: true },
+      }),
+    ]);
+
+    if (!sender || !receiver) return;
+
+    const senderHandle = this.toHandle(sender.userName || sender.displayName);
+    const senderDisplayName = sender.displayName || sender.userName || 'Someone';
+    const messagePreview = this.truncateText(messageContent?.trim(), 100);
+
+    const title = `💬 ${senderDisplayName}`;
+    const body = messagePreview
+      ? `${senderDisplayName} sent you a message: "${messagePreview}"`
+      : `${senderDisplayName} sent you a message`;
+
+    return this.sendNotificationToUser(
+      receiverId,
+      title,
+      body,
+      {
+        type: 'chat_message',
+        senderId,
+        receiverId,
+        senderUserName: senderHandle,
+        senderDisplayName,
+        senderImage: sender.image || '',
+        message: messagePreview,
+        chatId: chatId || '',
+        conversationId: conversationId || '',
+        notificationCategory: 'CHAT_MESSAGE',
+        deepLink: `valens://chat/${senderId}`,
+        expandedTitle: `MESSAGE FROM ${senderDisplayName.toUpperCase()}`,
+        expandedBody: body,
+        primaryAction: 'REPLY',
+        secondaryAction: 'VIEW_CHAT',
+      },
+    );
+  }
+
+  async sendChatMediaNotification(
+    senderId: string,
+    receiverId: string,
+    mediaType: string,
+    conversationId?: string,
+    chatId?: string,
+  ): Promise<void> {
+    if (!senderId || !receiverId || senderId === receiverId) return;
+
+    const [sender, receiver] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: senderId },
+        select: { id: true, userName: true, displayName: true, image: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: receiverId },
+        select: { id: true },
+      }),
+    ]);
+
+    if (!sender || !receiver) return;
+
+    const senderHandle = this.toHandle(sender.userName || sender.displayName);
+    const senderDisplayName = sender.displayName || sender.userName || 'Someone';
+    const mediaLabel = (mediaType || 'post').toLowerCase();
+
+    const title = `💬 ${senderDisplayName}`;
+    const body = `${senderDisplayName} shared a ${mediaLabel} with you`;
+
+    return this.sendNotificationToUser(
+      receiverId,
+      title,
+      body,
+      {
+        type: 'chat_media',
+        senderId,
+        receiverId,
+        senderUserName: senderHandle,
+        senderDisplayName,
+        senderImage: sender.image || '',
+        mediaType,
+        chatId: chatId || '',
+        conversationId: conversationId || '',
+        notificationCategory: 'CHAT_MESSAGE',
+        deepLink: `valens://chat/${senderId}`,
+        expandedTitle: `MESSAGE FROM ${senderDisplayName.toUpperCase()}`,
+        expandedBody: body,
+        primaryAction: 'VIEW',
+        secondaryAction: 'VIEW_CHAT',
+      },
+    );
+  }
+
   async getNotificationById(notificationId: string): Promise<Notification | null> {
     return this.prisma.notification.findUnique({
       where: { id: notificationId },

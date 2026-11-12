@@ -35,11 +35,19 @@ export class PostService {
     'Private Circle',
   ];
 
+  private io?: any;
+  private connectedUsers?: Map<string, string>;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
     private readonly moderationService: ModerationService,
   ) { }
+
+  setSocketServer(io: any, connectedUsers: Map<string, string>) {
+    this.io = io;
+    this.connectedUsers = connectedUsers;
+  }
 
   private isPrivateCircleVisibility(visibleTo?: string | null): boolean {
     const normalized = (visibleTo || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -4345,7 +4353,46 @@ export class PostService {
         mediaType: normalizedMediaType as any,
         chatId: chatBox.id,
       },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            userName: true,
+            displayName: true,
+            image: true,
+          },
+        },
+        receiver: {
+          select: {
+            id: true,
+            userName: true,
+            displayName: true,
+            image: true,
+          },
+        },
+      },
     });
+
+    // Send notification for shared post/media
+    try {
+      await this.notificationService.sendChatMediaNotification(
+        sharedUserId,
+        receiverUserId,
+        normalizedMediaType,
+        conversation.id,
+        chatBox.id,
+      );
+    } catch (notificationError) {
+      console.error('Failed to send chat media notification:', notificationError);
+    }
+
+    if (this.io && this.connectedUsers) {
+      const receiverSocketId = this.connectedUsers.get(receiverUserId);
+      if (receiverSocketId) {
+        this.io.to(receiverSocketId).emit('newMessage', conversation);
+        this.io.to(receiverSocketId).emit('userConversationUpdate', conversation);
+      }
+    }
 
     return { message: 'Media shared successfully', conversationId: conversation.id, isTrustPost, ownerId };
   }
@@ -4738,10 +4785,50 @@ export class PostService {
         type: 'CHAT',
         senderId,
         receiverId,
-        content: message,
+        content: message.trim(),
         chatId: chatBox.id,
       },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            userName: true,
+            displayName: true,
+            image: true,
+          },
+        },
+        receiver: {
+          select: {
+            id: true,
+            userName: true,
+            displayName: true,
+            image: true,
+          },
+        },
+      },
     });
+
+    // Send push and in-app notification to receiver (e.g., Akash)
+    try {
+      await this.notificationService.sendChatMessageNotification(
+        senderId,
+        receiverId,
+        message.trim(),
+        conversation.id,
+        chatBox.id,
+      );
+    } catch (notificationError) {
+      console.error('Failed to send chat message notification:', notificationError);
+    }
+
+    // Real-time socket emission if receiver is online
+    if (this.io && this.connectedUsers) {
+      const receiverSocketId = this.connectedUsers.get(receiverId);
+      if (receiverSocketId) {
+        this.io.to(receiverSocketId).emit('newMessage', conversation);
+        this.io.to(receiverSocketId).emit('userConversationUpdate', conversation);
+      }
+    }
 
     return conversation;
   }
