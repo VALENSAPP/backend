@@ -18,6 +18,7 @@ export class ClosetChatService {
                 buyerId: true,
                 sellerId: true,
                 status: true,
+                hiddenBy: true,
             },
         });
 
@@ -35,6 +36,11 @@ export class ClosetChatService {
         const threads = await this.prisma.closetChatThread.findMany({
             where: {
                 OR: [{ buyerId: userId }, { sellerId: userId }],
+                NOT: {
+                    hiddenBy: {
+                        has: userId,
+                    },
+                },
             },
             include: {
                 buyer: {
@@ -169,9 +175,15 @@ export class ClosetChatService {
                 },
             });
 
+            const currentHiddenBy = thread.hiddenBy || [];
+            const updatedHiddenBy = currentHiddenBy.filter((id) => id !== userId && id !== receiverId);
+
             await tx.closetChatThread.update({
                 where: { id: threadId },
-                data: { lastMessageAt: createdMessage.createdAt },
+                data: {
+                    lastMessageAt: createdMessage.createdAt,
+                    hiddenBy: updatedHiddenBy,
+                },
             });
 
             return createdMessage;
@@ -703,6 +715,50 @@ export class ClosetChatService {
             threadId,
             message: createdMessage,
         };
+    }
+
+    async deleteThread(userId: string, threadId: string) {
+        if (!userId) throw new UnauthorizedException('User not authenticated');
+        if (!threadId) throw new BadRequestException('threadId is required');
+
+        const thread = await this.assertThreadParticipant(threadId, userId);
+
+        const currentHiddenBy = thread.hiddenBy || [];
+        const updatedHiddenBy = Array.from(new Set([...currentHiddenBy, userId]));
+
+        const bothDeleted =
+            updatedHiddenBy.includes(thread.buyerId) &&
+            updatedHiddenBy.includes(thread.sellerId);
+
+        if (bothDeleted) {
+            await this.prisma.$transaction([
+                this.prisma.closetChatMessage.deleteMany({
+                    where: { threadId },
+                }),
+                this.prisma.closetChatThread.delete({
+                    where: { id: threadId },
+                }),
+            ]);
+
+            return {
+                success: true,
+                message: 'Closet chat thread permanently deleted',
+                threadId,
+            };
+        } else {
+            await this.prisma.closetChatThread.update({
+                where: { id: threadId },
+                data: {
+                    hiddenBy: updatedHiddenBy,
+                },
+            });
+
+            return {
+                success: true,
+                message: 'Closet chat thread deleted successfully for user',
+                threadId,
+            };
+        }
     }
 }
 
