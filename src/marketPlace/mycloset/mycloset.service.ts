@@ -807,12 +807,24 @@ export class MyclosetService {
       select: {
         id: true,
         battleId: true,
+        pinStartAt: true,
+        activatedAt: true,
         startAt: true,
         endAt: true,
+        createdAt: true,
       },
     });
 
-    const pinnedBattleIds = [...new Set(activeBoosts.map((b) => b.battleId))];
+    const pinnedBattleMap = new Map<string, { boostedAt: Date; endAt: Date }>();
+    for (const boost of activeBoosts) {
+      const boostedAt = boost.pinStartAt ?? boost.activatedAt ?? boost.startAt ?? boost.createdAt;
+      const current = pinnedBattleMap.get(boost.battleId);
+      if (!current || boostedAt.getTime() > current.boostedAt.getTime()) {
+        pinnedBattleMap.set(boost.battleId, { boostedAt, endAt: boost.endAt! });
+      }
+    }
+
+    const pinnedBattleIds = Array.from(pinnedBattleMap.keys());
     const pinnedParticipants =
       pinnedBattleIds.length > 0
         ? await this.prisma.marketplaceBattleParticipant.findMany({
@@ -821,10 +833,20 @@ export class MyclosetService {
           })
         : [];
 
-    const pinnedProductMap = new Map<string, { battleId: string }>();
+    const pinnedProductMap = new Map<string, { battleId: string; boostedAt: Date; endAt: Date }>();
     for (const p of pinnedParticipants) {
       if (p.productId) {
-        pinnedProductMap.set(p.productId, { battleId: p.battleId });
+        const battleBoost = pinnedBattleMap.get(p.battleId);
+        if (battleBoost) {
+          const current = pinnedProductMap.get(p.productId);
+          if (!current || battleBoost.boostedAt.getTime() > current.boostedAt.getTime()) {
+            pinnedProductMap.set(p.productId, {
+              battleId: p.battleId,
+              boostedAt: battleBoost.boostedAt,
+              endAt: battleBoost.endAt,
+            });
+          }
+        }
       }
     }
 
@@ -849,13 +871,22 @@ export class MyclosetService {
         promoShippingFee: true,
         startAt: true,
         endAt: true,
+        activatedAt: true,
+        createdAt: true,
       },
     });
 
-    const promotionMap = new Map<string, (typeof activePromotions)[0]>();
+    const promotionMap = new Map<
+      string,
+      (typeof activePromotions)[0] & { promotedAt: Date }
+    >();
     for (const promo of activePromotions) {
       if (promo.productId) {
-        promotionMap.set(promo.productId, promo);
+        const promotedAt = promo.activatedAt ?? promo.startAt ?? promo.createdAt;
+        const current = promotionMap.get(promo.productId);
+        if (!current || promotedAt.getTime() > current.promotedAt.getTime()) {
+          promotionMap.set(promo.productId, { ...promo, promotedAt });
+        }
       }
     }
 
@@ -937,22 +968,57 @@ export class MyclosetService {
     };
 
     // 5. Multi-level Priority Tier sorting
+    // Tier 1: Active Pinned -> ordered by boostedAt DESC (latest boosted first)
+    // Tier 2: Active Free Shipping -> ordered by promotedAt DESC (latest promoted first)
+    // Tier 3: Active Percentage Off -> ordered by promotedAt DESC (latest promoted first)
+    // Tier 4: Standard Products (including expired boosts/promotions) -> treated as normal posts
     candidateItems.sort((a, b) => {
-      const rankA = getTier(a.id);
-      const rankB = getTier(b.id);
-
-      if (sortBy === 'priority' || rankA !== rankB) {
-        if (rankA !== rankB) {
-          return rankA - rankB; // 1 (Pin) -> 2 (Free Shipping) -> 3 (Percentage Off) -> 4 (Standard)
+      // Explicit global sort requests
+      if (sortBy === 'boostedAt') {
+        const boostedAtA = pinnedProductMap.get(a.id)?.boostedAt?.getTime() ?? 0;
+        const boostedAtB = pinnedProductMap.get(b.id)?.boostedAt?.getTime() ?? 0;
+        if (boostedAtA !== boostedAtB) {
+          return sortOrder === 'asc' ? boostedAtA - boostedAtB : boostedAtB - boostedAtA;
+        }
+      } else if (sortBy === 'promotedAt') {
+        const promotedAtA = promotionMap.get(a.id)?.promotedAt?.getTime() ?? 0;
+        const promotedAtB = promotionMap.get(b.id)?.promotedAt?.getTime() ?? 0;
+        if (promotedAtA !== promotedAtB) {
+          return sortOrder === 'asc' ? promotedAtA - promotedAtB : promotedAtB - promotedAtA;
         }
       }
 
-      // Tie-breaker within the same tier:
+      const rankA = getTier(a.id);
+      const rankB = getTier(b.id);
+
+      // Higher priority tier comes first
+      if (rankA !== rankB) {
+        return rankA - rankB; // 1 (Pin) -> 2 (Free Shipping) -> 3 (Percentage Off) -> 4 (Standard/Expired)
+      }
+
+      // Tie-breakers within the same tier:
+      if (rankA === 1) {
+        // Tier 1: Which boosted last comes on top (boostedAt DESC)
+        const boostedAtA = pinnedProductMap.get(a.id)?.boostedAt?.getTime() ?? 0;
+        const boostedAtB = pinnedProductMap.get(b.id)?.boostedAt?.getTime() ?? 0;
+        if (boostedAtA !== boostedAtB) {
+          return boostedAtB - boostedAtA;
+        }
+      } else if (rankA === 2 || rankA === 3) {
+        // Tier 2 & 3: Which promoted last comes on top (promotedAt DESC)
+        const promotedAtA = promotionMap.get(a.id)?.promotedAt?.getTime() ?? 0;
+        const promotedAtB = promotionMap.get(b.id)?.promotedAt?.getTime() ?? 0;
+        if (promotedAtA !== promotedAtB) {
+          return promotedAtB - promotedAtA;
+        }
+      }
+
+      // Tier 4 (Normal posts and expired boosts/promos):
       if (sortBy === 'price') {
         return sortOrder === 'asc' ? a.price - b.price : b.price - a.price;
       }
 
-      // Default tie-breaker: newest first
+      // Default: newest post first (createdAt DESC)
       const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
       return sortOrder === 'asc' ? -timeDiff : timeDiff;
     });
@@ -1042,6 +1108,13 @@ export class MyclosetService {
         const promoShippingFee = hasFreeShipping ? 0 : (promo?.promoShippingFee ?? item.shippingFee ?? 0);
         const currentShippingFee = hasFreeShipping ? 0 : promoShippingFee;
 
+        const boostedAt = isPinned ? (pinnedProductMap.get(item.id)?.boostedAt ?? null) : null;
+        const promotedAt = promo ? (promo.promotedAt ?? null) : null;
+        const effectiveEndAt = (isPinned ? pinnedProductMap.get(item.id)?.endAt : null) ?? promo?.endAt ?? null;
+        const remainingSeconds = effectiveEndAt
+          ? Math.max(0, Math.floor((effectiveEndAt.getTime() - now.getTime()) / 1000))
+          : null;
+
         return {
           id: item.id,
           closetId: item.closetId,
@@ -1067,6 +1140,8 @@ export class MyclosetService {
           moderationStatus: item.moderationStatus,
           createdAt: item.createdAt,
           updatedAt: item.updatedAt,
+          boostedAt,
+          promotedAt,
           closet: item.closet,
           user: item.user,
           pricing: {
@@ -1087,10 +1162,10 @@ export class MyclosetService {
             promotionType: promo?.promoType ?? null,
             promotionMessage: promo?.message ?? null,
             battleId: pinnedProductMap.get(item.id)?.battleId ?? promo?.battleId ?? null,
-            promotionEndAt: promo?.endAt ?? null,
-            remainingSeconds: promo?.endAt
-              ? Math.max(0, Math.floor((promo.endAt.getTime() - now.getTime()) / 1000))
-              : null,
+            boostedAt,
+            promotedAt,
+            promotionEndAt: effectiveEndAt,
+            remainingSeconds,
           },
         };
       });

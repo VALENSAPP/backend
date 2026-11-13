@@ -86,12 +86,12 @@ export class ListPriorityProductsQueryDto {
 
   @ApiPropertyOptional({
     description: 'Sort field within tiers or general ordering',
-    enum: ['priority', 'createdAt', 'price'],
+    enum: ['priority', 'createdAt', 'price', 'boostedAt', 'promotedAt'],
     default: 'priority',
   })
   @IsOptional()
   @IsString()
-  sortBy?: 'priority' | 'createdAt' | 'price' = 'priority';
+  sortBy?: 'priority' | 'createdAt' | 'price' | 'boostedAt' | 'promotedAt' = 'priority';
 
   @ApiPropertyOptional({
     description: 'Sort order',

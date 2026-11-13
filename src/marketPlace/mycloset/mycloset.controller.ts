@@ -154,7 +154,7 @@ export class MyclosetController {
   @ApiQuery({ name: 'condition', required: false, enum: ClosetItemCondition })
   @ApiQuery({ name: 'minPrice', required: false, example: 10 })
   @ApiQuery({ name: 'maxPrice', required: false, example: 500 })
-  @ApiQuery({ name: 'sortBy', required: false, enum: ['priority', 'createdAt', 'price'] })
+  @ApiQuery({ name: 'sortBy', required: false, enum: ['priority', 'createdAt', 'price', 'boostedAt', 'promotedAt'] })
   @ApiQuery({ name: 'sortOrder', required: false, enum: ['asc', 'desc'] })
   @ApiQuery({ name: 'page', required: false, example: 1 })
   @ApiQuery({ name: 'limit', required: false, example: 20 })
