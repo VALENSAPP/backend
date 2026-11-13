@@ -1,5 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, ShippingOptions } from '@prisma/client';
+import {
+  ClosetItemCondition,
+  MarketplaceBattleBoostStatus,
+  MarketplaceWinnerPromotionStatus,
+  MarketplaceWinnerPromotionType,
+  Prisma,
+  ShippingOptions,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { uploadImageToS3 } from '../../common/s3.util';
 import { CreateMyclosetDto } from './dto/create-mycloset.dto';
@@ -7,6 +14,7 @@ import { UpdateMyclosetDto } from './dto/update-mycloset.dto';
 import { CreateClosetItemDto } from './dto/create-closet-item.dto';
 import { UpdateClosetItemDto } from './dto/update-closet-item.dto';
 import { ListShopsQueryDto } from './dto/list-shops-query.dto';
+import { ListPriorityProductsQueryDto } from './dto/list-priority-products-query.dto';
 import { ModerationService } from '../../moderation/moderation.service';
 import { getUserCurrency } from '../../common/payment-provider.util';
 
@@ -762,6 +770,338 @@ export class MyclosetService {
       message: 'Closet item liked successfully',
       liked: true,
       totalLikes,
+    };
+  }
+
+  async listPriorityProducts(query: ListPriorityProductsQueryDto, viewerUserId?: string) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const skip = (page - 1) * limit;
+    const search = query.search?.trim();
+    const category = query.category?.trim();
+    const condition = query.condition;
+    const minPrice = query.minPrice;
+    const maxPrice = query.maxPrice;
+    const sortBy = query.sortBy ?? 'priority';
+    const sortOrder = query.sortOrder ?? 'desc';
+
+    const now = new Date();
+
+    // 1. Fetch active battle boosts with pinOnTop enabled
+    const activeBoosts = await this.prisma.marketplaceBattleBoost.findMany({
+      where: {
+        status: MarketplaceBattleBoostStatus.ACTIVE,
+        pinOnTop: true,
+        endAt: { gt: now },
+        OR: [
+          {
+            pinStartAt: { lte: now },
+            pinEndAt: { gt: now },
+          },
+          {
+            pinStartAt: null,
+            startAt: { lte: now },
+          },
+        ],
+      },
+      select: {
+        id: true,
+        battleId: true,
+        startAt: true,
+        endAt: true,
+      },
+    });
+
+    const pinnedBattleIds = [...new Set(activeBoosts.map((b) => b.battleId))];
+    const pinnedParticipants =
+      pinnedBattleIds.length > 0
+        ? await this.prisma.marketplaceBattleParticipant.findMany({
+            where: { battleId: { in: pinnedBattleIds } },
+            select: { productId: true, battleId: true },
+          })
+        : [];
+
+    const pinnedProductMap = new Map<string, { battleId: string }>();
+    for (const p of pinnedParticipants) {
+      if (p.productId) {
+        pinnedProductMap.set(p.productId, { battleId: p.battleId });
+      }
+    }
+
+    // 2. Fetch active winner promotions (Free Shipping & Percentage Off)
+    const activePromotions = await this.prisma.marketplaceWinnerPromotion.findMany({
+      where: {
+        status: MarketplaceWinnerPromotionStatus.ACTIVE,
+        endAt: { gt: now },
+        OR: [{ startAt: null }, { startAt: { lte: now } }],
+      },
+      select: {
+        id: true,
+        battleId: true,
+        productId: true,
+        promoType: true,
+        message: true,
+        discountPercent: true,
+        freeShipping: true,
+        originalPrice: true,
+        promoPrice: true,
+        originalShippingFee: true,
+        promoShippingFee: true,
+        startAt: true,
+        endAt: true,
+      },
+    });
+
+    const promotionMap = new Map<string, (typeof activePromotions)[0]>();
+    for (const promo of activePromotions) {
+      if (promo.productId) {
+        promotionMap.set(promo.productId, promo);
+      }
+    }
+
+    // 3. Build product filters
+    const where: Prisma.ClosetItemsWhereInput = {
+      isActive: true,
+      isDeleted: false,
+      moderationStatus: 'APPROVED' as any,
+      user: {
+        isDeleted: 0,
+        deletedAt: null,
+      },
+      ...(category ? { category: { equals: category, mode: 'insensitive' } } : {}),
+      ...(condition ? { condition } : {}),
+      ...(minPrice !== undefined || maxPrice !== undefined
+        ? {
+            price: {
+              ...(minPrice !== undefined ? { gte: minPrice } : {}),
+              ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
+            },
+          }
+        : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' } },
+              { category: { contains: search, mode: 'insensitive' } },
+              { brand: { contains: search, mode: 'insensitive' } },
+              { description: { contains: search, mode: 'insensitive' } },
+              {
+                closet: {
+                  OR: [
+                    { shopName: { contains: search, mode: 'insensitive' } },
+                    { shopUsername: { contains: search, mode: 'insensitive' } },
+                  ],
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+
+    // 4. Fetch candidate product IDs to rank
+    const candidateItems = await this.prisma.closetItems.findMany({
+      where,
+      select: {
+        id: true,
+        createdAt: true,
+        price: true,
+      },
+    });
+
+    const total = candidateItems.length;
+
+    // Helper to calculate Priority Tier:
+    // Tier 1: Pinned on top
+    // Tier 2: Free Shipping
+    // Tier 3: Percentage Off
+    // Tier 4: Regular product
+    const getTier = (productId: string): number => {
+      if (pinnedProductMap.has(productId)) {
+        return 1;
+      }
+      const promo = promotionMap.get(productId);
+      if (
+        promo &&
+        (promo.promoType === MarketplaceWinnerPromotionType.FREE_SHIPPING || promo.freeShipping)
+      ) {
+        return 2;
+      }
+      if (
+        promo &&
+        (promo.promoType === MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H ||
+          (promo.discountPercent && promo.discountPercent > 0))
+      ) {
+        return 3;
+      }
+      return 4;
+    };
+
+    // 5. Multi-level Priority Tier sorting
+    candidateItems.sort((a, b) => {
+      const rankA = getTier(a.id);
+      const rankB = getTier(b.id);
+
+      if (sortBy === 'priority' || rankA !== rankB) {
+        if (rankA !== rankB) {
+          return rankA - rankB; // 1 (Pin) -> 2 (Free Shipping) -> 3 (Percentage Off) -> 4 (Standard)
+        }
+      }
+
+      // Tie-breaker within the same tier:
+      if (sortBy === 'price') {
+        return sortOrder === 'asc' ? a.price - b.price : b.price - a.price;
+      }
+
+      // Default tie-breaker: newest first
+      const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
+      return sortOrder === 'asc' ? -timeDiff : timeDiff;
+    });
+
+    // 6. Slice requested page IDs
+    const pageIds = candidateItems.slice(skip, skip + limit).map((i) => i.id);
+
+    if (pageIds.length === 0) {
+      return {
+        products: [],
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit) || 1,
+        hasMore: false,
+      };
+    }
+
+    // 7. Hydrate the paginated items with full relations
+    const products = await this.prisma.closetItems.findMany({
+      where: { id: { in: pageIds } },
+      include: {
+        closet: {
+          select: {
+            id: true,
+            shopName: true,
+            shopUsername: true,
+            shopLogo: true,
+            location: true,
+          },
+        },
+        user: {
+          select: {
+            id: true,
+            userName: true,
+            displayName: true,
+            image: true,
+            profile: true,
+            country: true,
+          },
+        },
+      },
+    });
+
+    const productMap = new Map(products.map((p) => [p.id, p]));
+
+    // 8. Map in exact prioritized order and decorate with promotion metadata
+    const items = pageIds
+      .map((id) => productMap.get(id))
+      .filter((p): p is NonNullable<typeof p> => Boolean(p))
+      .map((item) => {
+        const isPinned = pinnedProductMap.has(item.id);
+        const promo = promotionMap.get(item.id);
+        const hasFreeShipping = Boolean(
+          promo &&
+            (promo.promoType === MarketplaceWinnerPromotionType.FREE_SHIPPING || promo.freeShipping),
+        );
+        const hasPercentageOff = Boolean(
+          promo &&
+            (promo.promoType === MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H ||
+              (promo.discountPercent && promo.discountPercent > 0)),
+        );
+
+        let priorityTier = 4;
+        let primaryBadge: 'PINNED' | 'FREE_SHIPPING' | 'PERCENTAGE_OFF' | null = null;
+
+        if (isPinned) {
+          priorityTier = 1;
+          primaryBadge = 'PINNED';
+        } else if (hasFreeShipping) {
+          priorityTier = 2;
+          primaryBadge = 'FREE_SHIPPING';
+        } else if (hasPercentageOff) {
+          priorityTier = 3;
+          primaryBadge = 'PERCENTAGE_OFF';
+        }
+
+        const discountPercent = promo?.discountPercent ?? (hasPercentageOff ? 10 : null);
+        const calculatedPromoPrice =
+          promo?.promoPrice ??
+          (hasPercentageOff && discountPercent
+            ? Number((item.price * (1 - discountPercent / 100)).toFixed(2))
+            : null);
+        const currentPrice = calculatedPromoPrice ?? item.price;
+
+        const originalShippingFee = promo?.originalShippingFee ?? item.shippingFee ?? 0;
+        const promoShippingFee = hasFreeShipping ? 0 : (promo?.promoShippingFee ?? item.shippingFee ?? 0);
+        const currentShippingFee = hasFreeShipping ? 0 : promoShippingFee;
+
+        return {
+          id: item.id,
+          closetId: item.closetId,
+          userId: item.userId,
+          name: item.name,
+          category: item.category,
+          brand: item.brand,
+          condition: item.condition,
+          description: item.description,
+          price: item.price,
+          quantity: item.quantity,
+          images: item.images,
+          soldCount: item.soldCount,
+          shippingOption: item.shippingOption,
+          shippingFee: item.shippingFee,
+          estimateShippingTime: item.estimateShippingTime,
+          pickupAddress: item.pickupAddress,
+          pickupAvailableHours: item.pickupAvailableHours,
+          pickUpCity: item.pickUpCity,
+          residentNumber: item.residentNumber,
+          buyerChatEnabled: item.buyerChatEnabled,
+          returnPolicy: item.returnPolicy,
+          moderationStatus: item.moderationStatus,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+          closet: item.closet,
+          user: item.user,
+          pricing: {
+            originalPrice: promo?.originalPrice ?? item.price,
+            promoPrice: calculatedPromoPrice,
+            currentPrice,
+            originalShippingFee,
+            promoShippingFee,
+            currentShippingFee,
+          },
+          promotion: {
+            priorityTier,
+            primaryBadge,
+            isPinnedOnTop: isPinned,
+            hasFreeShipping,
+            hasPercentageOff,
+            discountPercent,
+            promotionType: promo?.promoType ?? null,
+            promotionMessage: promo?.message ?? null,
+            battleId: pinnedProductMap.get(item.id)?.battleId ?? promo?.battleId ?? null,
+            promotionEndAt: promo?.endAt ?? null,
+            remainingSeconds: promo?.endAt
+              ? Math.max(0, Math.floor((promo.endAt.getTime() - now.getTime()) / 1000))
+              : null,
+          },
+        };
+      });
+
+    return {
+      products: items,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit) || 1,
+      hasMore: skip + items.length < total,
     };
   }
 }

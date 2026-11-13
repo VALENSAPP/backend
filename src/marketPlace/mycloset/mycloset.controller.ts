@@ -27,6 +27,8 @@ import { CreateClosetItemDto } from './dto/create-closet-item.dto';
 import { UpdateClosetItemDto } from './dto/update-closet-item.dto';
 import { FindClosetByUserDto } from './dto/find-closet-by-user.dto';
 import { ListShopsQueryDto } from './dto/list-shops-query.dto';
+import { ListPriorityProductsQueryDto } from './dto/list-priority-products-query.dto';
+import { ClosetItemCondition } from '@prisma/client';
 
 @ApiTags('mycloset')
 @Controller('mycloset')
@@ -138,6 +140,32 @@ export class MyclosetController {
     const userId = (req.user as any)?.userId;
     return this.myclosetService.createItem(userId, dto, images);
   }
+
+  @Get('items/explore')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Explore all marketplace products with prioritized ranking',
+    description:
+      'Returns paginated products ordered by priority tier: 1) Pinned on Top (Battle Boost), 2) Free Shipping (Winner Promotion), 3) Percentage Off (Winner Discount), 4) Standard products.',
+  })
+  @ApiQuery({ name: 'search', required: false, example: 'vintage jacket' })
+  @ApiQuery({ name: 'category', required: false, example: 'Fashion' })
+  @ApiQuery({ name: 'condition', required: false, enum: ClosetItemCondition })
+  @ApiQuery({ name: 'minPrice', required: false, example: 10 })
+  @ApiQuery({ name: 'maxPrice', required: false, example: 500 })
+  @ApiQuery({ name: 'sortBy', required: false, enum: ['priority', 'createdAt', 'price'] })
+  @ApiQuery({ name: 'sortOrder', required: false, enum: ['asc', 'desc'] })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, example: 20 })
+  async explorePriorityProducts(
+    @Req() req: Request,
+    @Query(new ValidationPipe({ whitelist: true, transform: true })) query: ListPriorityProductsQueryDto,
+  ) {
+    const viewerUserId = (req.user as any)?.userId;
+    return this.myclosetService.listPriorityProducts(query, viewerUserId);
+  }
+
 
   @Get('items')
   @UseGuards(AuthGuard('jwt'))
