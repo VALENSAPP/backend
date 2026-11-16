@@ -109,8 +109,14 @@ export class ApiFootballPredictionProvider implements PredictionProviderClient {
       return [];
     }
 
-    const cleanSubCat = (subCategory || '').trim().toUpperCase();
-    const cleanLeague = (league || '').trim().toUpperCase();
+    const cleanSubCat = (subCategory || '').trim().toUpperCase().replace(/[\s-_]+/g, '_');
+    const cleanLeague = (league || '').trim().toUpperCase().replace(/[\s-_]+/g, '_');
+
+    // API-Football only supports soccer (FOOTBALL) and American Football (NFL).
+    // If a different sport is requested (e.g. CRICKET, BASKETBALL, TENNIS), return empty.
+    if (cleanSubCat && !['FOOTBALL', 'SOCCER', 'AMERICAN_FOOTBALL', 'ALL'].includes(cleanSubCat)) {
+      return [];
+    }
 
     // 1. If user explicitly requested American Football or NFL, query API-Sports NFL
     if (cleanSubCat === 'AMERICAN_FOOTBALL' || cleanLeague === 'NFL') {
