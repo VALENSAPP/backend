@@ -614,17 +614,29 @@ export class BattleService {
     if (!category) throw new BadRequestException('Prediction category required');
     const pagination = this.parsePredictionQuestionPagination(pageInput, limitInput);
 
+    const normalizedSubCategory = subCategory?.trim();
+
     let rawMarkets: PredictionMarket[] = [];
 
     if (provider) {
       const client = this.getPredictionProvider(provider);
-      rawMarkets = await client.listMarkets(category, subCategory, league);
+      rawMarkets = await client.listMarkets(category, normalizedSubCategory, league);
     } else if (category === PredictionCategory.SPORTS) {
-      // Query providers in parallel to aggregate Sports, NFL, and CBF Brasil soccer
-      const results = await Promise.allSettled([
-        this.getPredictionProvider(PredictionProvider.API_FOOTBALL).listMarkets(category, subCategory, league),
-        this.getPredictionProvider(PredictionProvider.POLYMARKET).listMarkets(category, subCategory, league),
-      ]);
+      const cleanSubCat = (normalizedSubCategory || '').toUpperCase().replace(/[\s-_]+/g, '_');
+      const isFootballSubCat = !cleanSubCat || cleanSubCat === 'ALL' || cleanSubCat === 'FOOTBALL' || cleanSubCat === 'SOCCER' || cleanSubCat === 'AMERICAN_FOOTBALL';
+
+      // Query providers in parallel: only query API_FOOTBALL if soccer or american football is relevant
+      const providerPromises: Promise<PredictionMarket[]>[] = [];
+      if (isFootballSubCat) {
+        providerPromises.push(
+          this.getPredictionProvider(PredictionProvider.API_FOOTBALL).listMarkets(category, normalizedSubCategory, league),
+        );
+      }
+      providerPromises.push(
+        this.getPredictionProvider(PredictionProvider.POLYMARKET).listMarkets(category, normalizedSubCategory, league),
+      );
+
+      const results = await Promise.allSettled(providerPromises);
 
       const seenIds = new Set<string>();
       for (const res of results) {
@@ -642,7 +654,7 @@ export class BattleService {
       // If both API_FOOTBALL and POLYMARKET returned 0, fallback to MANIFOLD
       if (rawMarkets.length === 0) {
         try {
-          const manifoldMarkets = await this.getPredictionProvider(PredictionProvider.MANIFOLD).listMarkets(category, subCategory, league);
+          const manifoldMarkets = await this.getPredictionProvider(PredictionProvider.MANIFOLD).listMarkets(category, normalizedSubCategory, league);
           rawMarkets.push(...manifoldMarkets);
         } catch {
           // ignore manifold error
@@ -651,18 +663,29 @@ export class BattleService {
     } else {
       // Non-sports categories: Polymarket primary, Manifold fallback
       try {
-        rawMarkets = await this.getPredictionProvider(PredictionProvider.POLYMARKET).listMarkets(category, subCategory, league);
+        rawMarkets = await this.getPredictionProvider(PredictionProvider.POLYMARKET).listMarkets(category, normalizedSubCategory, league);
       } catch (err: any) {
         this.logger.warn(`Polymarket query failed for ${category}: ${err?.message}`);
       }
 
       if (rawMarkets.length === 0) {
         try {
-          rawMarkets = await this.getPredictionProvider(PredictionProvider.MANIFOLD).listMarkets(category, subCategory, league);
+          rawMarkets = await this.getPredictionProvider(PredictionProvider.MANIFOLD).listMarkets(category, normalizedSubCategory, league);
         } catch (err: any) {
           this.logger.warn(`Manifold fallback failed for ${category}: ${err?.message}`);
         }
       }
+    }
+
+    // Ensure returned markets match the requested subCategory if specified
+    if (normalizedSubCategory && normalizedSubCategory.toUpperCase() !== 'ALL') {
+      const targetSub = normalizedSubCategory.toUpperCase().replace(/[\s-_]+/g, '_');
+      rawMarkets = rawMarkets.filter((m) => {
+        if (!m.subCategory || m.subCategory.toUpperCase() === 'OTHER') return true;
+        const marketSub = m.subCategory.toUpperCase().replace(/[\s-_]+/g, '_');
+        if ((targetSub === 'FOOTBALL' || targetSub === 'SOCCER') && (marketSub === 'SOCCER' || marketSub === 'FOOTBALL')) return true;
+        return marketSub === targetSub;
+      });
     }
 
     // Optional Search query filtering
