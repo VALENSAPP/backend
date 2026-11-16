@@ -55,7 +55,7 @@ export class PagBankService {
             process.env.PAGBANK_CONNECT_RETURN_BASE_URL ||
             process.env.BACKEND_URL ||
             process.env.BASE_URL ||
-            'https://api.valens.app'
+            'https://prod-api.valens.app'
         ).replace(/\/$/, '');
         if (base.includes('/billing/pagbank/callback')) return base;
         return `${base}/billing/pagbank/callback`;
@@ -67,7 +67,7 @@ export class PagBankService {
             process.env.BASE_URL ||
             process.env.PAGBANK_NOTIFICATION_URL ||
             process.env.PAGBANK_CONNECT_RETURN_BASE_URL ||
-            'https://api.valens.app'
+            'https://prod-api.valens.app'
         ).replace(/\/$/, '');
         if (base.includes('/billing/pagbank/webhook')) return base;
         return `${base}/billing/pagbank/webhook`;
@@ -660,8 +660,8 @@ export class PagBankService {
             const paymentType = isBoost
                 ? 'marketplace_battle_boost'
                 : isPromotion
-                ? 'marketplace_winner_promotion'
-                : 'marketplace';
+                    ? 'marketplace_winner_promotion'
+                    : 'marketplace';
 
             if (mp.status === 'PAID') {
                 return {

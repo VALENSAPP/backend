@@ -44,7 +44,7 @@ export class MailService {
             process.env.APP_REDIRECT_URL ||
             (process.env.BASE_URL ? `${process.env.BASE_URL.replace(/\/$/, '')}/open-app` : '') ||
             (process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL.replace(/\/$/, '')}/open-app` : '') ||
-            'https://api.valens.app/open-app';
+            'https://prod-api.valens.app/open-app';
 
         const defaultLogoUrl =
             process.env.APP_LOGO_URL ||

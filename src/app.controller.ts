@@ -6,7 +6,7 @@ import * as path from 'path';
 
 @Controller()
 export class AppController {
-  constructor(private readonly appService: AppService) {}
+  constructor(private readonly appService: AppService) { }
 
   @Get()
   getHello(): string {
@@ -142,7 +142,7 @@ export class AppController {
     const configuredBaseUrl = process.env.BASE_URL;
     const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
     const host = req.get('host');
-    const baseUrl = configuredBaseUrl || (host ? `${protocol}://${host}` : 'https://api.valens.app');
+    const baseUrl = configuredBaseUrl || (host ? `${protocol}://${host}` : 'https://prod-api.valens.app');
 
     const configuredOgImageUrl = process.env.OG_IMAGE_URL;
     const ogImage =

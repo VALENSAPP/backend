@@ -427,7 +427,7 @@ async function bootstrap() {
   console.log(`Nest application successfully started`);
   console.log(`Listening on host "${host}" at port "${port}"`);
   console.log(`Socket.IO server running on the same port`);
-  console.log(`Access Swagger UI at "https://api.valens.app/api"`);
+  console.log(`Access Swagger UI at "https://prod-api.valens.app/api"`);
   // Local Stripe testing: run in another terminal: stripe listen --forward-to localhost:${port}/billing/webhook
   console.log(`[Stripe] For local webhooks run: stripe listen --forward-to http://localhost:${port}/billing/webhook`);
   console.log(`[EasyPost] Webhook endpoint: http://localhost:${port}/shipping/easypost/webhook (set EASYPOST_API_KEY when ready)`);
