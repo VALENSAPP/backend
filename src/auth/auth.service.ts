@@ -1030,7 +1030,7 @@ export class AuthService {
     // 3. Send professional email notification via SendGrid
     if (user.email) {
       try {
-        const baseUrl = process.env.BASE_URL || 'https://api.valens.app';
+        const baseUrl = process.env.BASE_URL || 'https://prod-api.valens.app';
         const profileUrl = `${baseUrl.replace(/\/$/, '')}/profile/${user.id}`;
         await this.mailService.sendTemplateEmail({
           to: user.email,

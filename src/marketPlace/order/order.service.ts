@@ -499,7 +499,7 @@ export class OrderService {
             const sellerEmail = order.seller?.companyProfile?.email || order.seller?.email;
             if (!sellerEmail) return;
 
-            const baseUrl = process.env.BASE_URL || 'https://api.valens.app';
+            const baseUrl = process.env.BASE_URL || 'https://prod-api.valens.app';
             const sellerProfileUrl = order.seller?.id ? `${baseUrl.replace(/\/$/, '')}/profile/${order.seller.id}` : `${baseUrl}/open-app`;
             const buyerProfileUrl = order.buyer?.id ? `${baseUrl.replace(/\/$/, '')}/profile/${order.buyer.id}` : `${baseUrl}/open-app`;
 

@@ -97,7 +97,7 @@ export class SellerOrderService {
                 process.env.APP_REDIRECT_URL ||
                 (process.env.BASE_URL ? `${process.env.BASE_URL.replace(/\/$/, '')}/open-app` : '') ||
                 (process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL.replace(/\/$/, '')}/open-app` : '') ||
-                'https://api.valens.app/open-app';
+                'https://prod-api.valens.app/open-app';
             const logoUrl =
                 process.env.APP_LOGO_URL ||
                 'https://valens-s3-2026.s3.us-west-1.amazonaws.com/assets/valens-logo.png';
@@ -581,7 +581,7 @@ export class SellerOrderService {
             const orderDetailsLink = `${appBaseUrl}/orders/${order.id}`;
             const chatLink = `${appBaseUrl}/marketplace/chat?orderId=${order.id}`;
 
-            const baseUrl = process.env.BASE_URL || 'https://api.valens.app';
+            const baseUrl = process.env.BASE_URL || 'https://prod-api.valens.app';
             const sellerProfileUrl = order.seller?.id ? `${baseUrl.replace(/\/$/, '')}/profile/${order.seller.id}` : `${baseUrl}/open-app`;
             const buyerProfileUrl = order.buyer?.id ? `${baseUrl.replace(/\/$/, '')}/profile/${order.buyer.id}` : `${baseUrl}/open-app`;
 
@@ -624,7 +624,7 @@ export class SellerOrderService {
 
             const plainText = `Your Order Is Being Prepared for Shipping! 📦\n\nGood news! ${sellerUsername} is preparing your order for shipment.\n\nOnce your order has been shipped, you’ll receive a notification with the carrier and tracking number so you can follow your package until delivery.\n\nHave a question about your order? Chat directly with the seller through Valens.`;
 
-            const baseUrl = process.env.BASE_URL || 'https://api.valens.app';
+            const baseUrl = process.env.BASE_URL || 'https://prod-api.valens.app';
             const sellerProfileUrl = order.seller?.id ? `${baseUrl.replace(/\/$/, '')}/profile/${order.seller.id}` : `${baseUrl}/open-app`;
 
             await this.mailService.sendTemplateEmail({
@@ -663,7 +663,7 @@ export class SellerOrderService {
 
             const plainText = `Your Valens pickup was completed successfully\n\nCongratulations on your sale! Your buyer successfully picked up the item at the scheduled location.\nThe transaction is now complete.\nThank you for selling on Valens.`;
 
-            const baseUrl = process.env.BASE_URL || 'https://api.valens.app';
+            const baseUrl = process.env.BASE_URL || 'https://prod-api.valens.app';
             const sellerProfileUrl = order.seller?.id ? `${baseUrl.replace(/\/$/, '')}/profile/${order.seller.id}` : `${baseUrl}/open-app`;
             const buyerProfileUrl = order.buyer?.id ? `${baseUrl.replace(/\/$/, '')}/profile/${order.buyer.id}` : `${baseUrl}/open-app`;
 

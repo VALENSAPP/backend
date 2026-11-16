@@ -253,7 +253,7 @@ Configure the platform PagBank Sandbox credentials only on the backend. Do not i
 
 The API is fully documented using OpenAPI/Swagger.
 
-- **Swagger UI Path:** `http://localhost:3002/api` (or `https://api.valens.app/api` on production/staging)
+- **Swagger UI Path:** `http://localhost:3002/api` (or `https://prod-api.valens.app/api` on production/staging)
 - **OpenAPI JSON Spec:** `http://localhost:3002/api-json`
 - **Authentication:** Protected by HTTP Basic Auth. Enter the values configured for `SWAGGER_USERNAME` and `SWAGGER_PASSWORD` in your `.env`.
 
@@ -342,6 +342,6 @@ This project is proprietary and confidential. Unauthorized copying, distribution
 
 ## Swagger
 
-Swagger Url - https://api.valens.app/api
+Swagger Url - https://prod-api.valens.app/api
 Swagger Username - valens
 Swagger Password - Valens@7878

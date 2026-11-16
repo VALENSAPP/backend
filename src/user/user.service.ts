@@ -948,13 +948,13 @@ export class UserService {
         const appRedirectUrl =
           process.env.APP_REDIRECT_URL ||
           (process.env.BASE_URL ? `${process.env.BASE_URL.replace(/\/$/, '')}/open-app` : '') ||
-          'https://api.valens.app/open-app';
+          'https://prod-api.valens.app/open-app';
         const logoUrl =
           process.env.APP_LOGO_URL ||
           (process.env.BASE_URL ? `${process.env.BASE_URL.replace(/\/$/, '')}/logo.png` : '') ||
-          'https://api.valens.app/logo.png';
+          'https://prod-api.valens.app/logo.png';
 
-        const baseUrl = process.env.BASE_URL || 'https://api.valens.app';
+        const baseUrl = process.env.BASE_URL || 'https://prod-api.valens.app';
         const profileUrl = `${baseUrl.replace(/\/$/, '')}/profile/${user.id}`;
         htmlTemplate = htmlTemplate.replace(/{{profile_url}}/g, profileUrl);
         htmlTemplate = htmlTemplate.replace(/{{profileUrl}}/g, profileUrl);
@@ -1059,13 +1059,13 @@ export class UserService {
       const appRedirectUrl =
         process.env.APP_REDIRECT_URL ||
         (process.env.BASE_URL ? `${process.env.BASE_URL.replace(/\/$/, '')}/open-app` : '') ||
-        'https://api.valens.app/open-app';
+        'https://prod-api.valens.app/open-app';
       const logoUrl =
         process.env.APP_LOGO_URL ||
         (process.env.BASE_URL ? `${process.env.BASE_URL.replace(/\/$/, '')}/logo.png` : '') ||
-        'https://api.valens.app/logo.png';
+        'https://prod-api.valens.app/logo.png';
 
-      const baseUrl = process.env.BASE_URL || 'https://api.valens.app';
+      const baseUrl = process.env.BASE_URL || 'https://prod-api.valens.app';
       const profileUrl = `${baseUrl.replace(/\/$/, '')}/profile/${user.id}`;
       htmlTemplate = htmlTemplate.replace(/{{profile_url}}/g, profileUrl);
       htmlTemplate = htmlTemplate.replace(/{{profileUrl}}/g, profileUrl);
@@ -4466,12 +4466,12 @@ export class UserService {
     const logoUrl =
       process.env.APP_LOGO_URL ||
       (process.env.BASE_URL ? `${process.env.BASE_URL.replace(/\/$/, '')}/logo.png` : '') ||
-      'https://api.valens.app/logo.png';
-    const baseUrl = process.env.BASE_URL || process.env.FRONTEND_URL || 'https://api.valens.app';
+      'https://prod-api.valens.app/logo.png';
+    const baseUrl = process.env.BASE_URL || process.env.FRONTEND_URL || 'https://prod-api.valens.app';
     const appRedirectUrl =
       process.env.APP_REDIRECT_URL ||
       (process.env.BASE_URL ? `${process.env.BASE_URL.replace(/\/$/, '')}/open-app` : '') ||
-      'https://api.valens.app/open-app';
+      'https://prod-api.valens.app/open-app';
     const renewUrl = `${baseUrl.replace(/\/$/, '')}/profile/${creatorId}?renew=true`;
 
     const processedFanIds = new Set<string>();
