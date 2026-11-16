@@ -17,6 +17,7 @@ import { SendMessageDto } from './dto/send-message.dto';
 import { ChatStatusUpdateDto } from './dto/chat-status-update.dto';
 import { HideChatDto } from './dto/hide-chat.dto';
 import { DeleteConversationDto } from './dto/delete-conversation.dto';
+import { ReadMessagesDto } from './dto/read-messages.dto';
 import { PinPostDto, UnpinPostDto } from './dto/pin-post.dto';
 import { GetPostTrustScoreDto, PostTrustVoteDto, RemovePostTrustVoteDto } from './dto/post-trust-vote.dto';
 import { POST_TYPES } from './dto/post-types';
@@ -723,6 +724,19 @@ export class PostController {
   ) {
     const userId = (req.user as any).userId;
     return this.postService.deleteConversation(userId, dto.conversationId, dto.type);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @Post('readMessages')
+  @ApiOperation({ summary: 'Mark all messages as read for normal chat or closet chat' })
+  @ApiBody({ type: ReadMessagesDto })
+  async readMessages(
+    @Req() req: Request,
+    @Body(new ValidationPipe({ whitelist: true, transform: true })) dto: ReadMessagesDto,
+  ) {
+    const userId = (req.user as any).userId;
+    return this.postService.readMessages(userId, dto);
   }
 
 }

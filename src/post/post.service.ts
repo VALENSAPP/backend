@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, ForbiddenException, NotFoundException,
 import { PrismaService } from '../prisma/prisma.service';
 import { uploadBufferToS3, uploadFileToS3, uploadImageToS3 } from '../common/s3.util';
 import { ChatConversationType } from './dto/delete-conversation.dto';
+import { ReadMessagesDto } from './dto/read-messages.dto';
 import {
   FollowStatus,
   MarketplaceBattleBoostStatus,
@@ -5663,4 +5664,194 @@ export class PostService {
     }
   }
 
+  async readMessages(userId: string, dto: ReadMessagesDto) {
+    if (!userId) throw new UnauthorizedException('User not authenticated');
+    if (!dto?.type) throw new BadRequestException('type is required (NORMAL or CLOSET)');
+
+    const normalizedType = String(dto.type).trim().toUpperCase();
+    const targetId = dto.conversationId || dto.chatId;
+
+    if (normalizedType === ChatConversationType.NORMAL) {
+      if (targetId) {
+        // 1. Locate ChatBox (either directly by id, by conversation message id, or by otherUserId)
+        let chatBox = await this.prisma.chatBox.findUnique({
+          where: { id: targetId },
+        });
+
+        if (!chatBox) {
+          const convRecord = await this.prisma.conversation.findUnique({
+            where: { id: targetId },
+            select: { chatId: true },
+          });
+          if (convRecord?.chatId) {
+            chatBox = await this.prisma.chatBox.findUnique({
+              where: { id: convRecord.chatId },
+            });
+          }
+        }
+
+        if (!chatBox) {
+          chatBox = await this.prisma.chatBox.findFirst({
+            where: {
+              OR: [
+                { senderId: userId, receiverId: targetId },
+                { senderId: targetId, receiverId: userId },
+              ],
+            },
+          });
+        }
+
+        const resolvedChatId = chatBox ? chatBox.id : targetId;
+
+        if (chatBox && chatBox.senderId !== userId && chatBox.receiverId !== userId) {
+          throw new UnauthorizedException('You are not authorized to access this conversation');
+        }
+
+        // Mark all unread messages received by this user in this chat as seen
+        const result = await this.prisma.conversation.updateMany({
+          where: {
+            chatId: resolvedChatId,
+            receiverId: userId,
+            isSeen: 0,
+          },
+          data: {
+            isSeen: 1,
+          },
+        });
+
+        // Socket notification
+        if (chatBox && this.io && this.connectedUsers) {
+          const otherUserId = chatBox.senderId === userId ? chatBox.receiverId : chatBox.senderId;
+          if (otherUserId) {
+            const otherSocketId = this.connectedUsers.get(otherUserId);
+            if (otherSocketId) {
+              this.io.to(otherSocketId).emit('messagesRead', {
+                chatId: resolvedChatId,
+                conversationId: resolvedChatId,
+                type: 'NORMAL',
+                readBy: userId,
+                updatedCount: result.count,
+              });
+            }
+          }
+        }
+
+        return {
+          success: true,
+          message: 'All messages marked as read successfully',
+          type: 'NORMAL',
+          conversationId: resolvedChatId,
+          updatedCount: result.count,
+        };
+      } else {
+        // Mark ALL unread normal messages received by this user as seen
+        const result = await this.prisma.conversation.updateMany({
+          where: {
+            receiverId: userId,
+            isSeen: 0,
+          },
+          data: {
+            isSeen: 1,
+          },
+        });
+
+        return {
+          success: true,
+          message: 'All normal chat messages marked as read successfully',
+          type: 'NORMAL',
+          updatedCount: result.count,
+        };
+      }
+    } else if (normalizedType === ChatConversationType.CLOSET) {
+      if (targetId) {
+        // 1. Locate ClosetChatThread (either directly by thread id, by message id, or by order id)
+        let thread = await this.prisma.closetChatThread.findUnique({
+          where: { id: targetId },
+        });
+
+        if (!thread) {
+          const msg = await this.prisma.closetChatMessage.findUnique({
+            where: { id: targetId },
+            select: { threadId: true },
+          });
+          if (msg?.threadId) {
+            thread = await this.prisma.closetChatThread.findUnique({
+              where: { id: msg.threadId },
+            });
+          }
+        }
+
+        if (!thread) {
+          thread = await this.prisma.closetChatThread.findUnique({
+            where: { orderId: targetId },
+          });
+        }
+
+        if (!thread) {
+          throw new NotFoundException('Closet chat thread not found');
+        }
+
+        if (thread.buyerId !== userId && thread.sellerId !== userId) {
+          throw new UnauthorizedException('You are not authorized to access this closet chat');
+        }
+
+        const targetThreadId = thread.id;
+
+        // Mark all unread messages received by this user in this thread as seen
+        const result = await this.prisma.closetChatMessage.updateMany({
+          where: {
+            threadId: targetThreadId,
+            receiverId: userId,
+            isSeen: false,
+          },
+          data: {
+            isSeen: true,
+          },
+        });
+
+        // Socket notification
+        const otherUserId = thread.buyerId === userId ? thread.sellerId : thread.buyerId;
+        if (otherUserId && this.io && this.connectedUsers) {
+          const otherSocketId = this.connectedUsers.get(otherUserId);
+          if (otherSocketId) {
+            this.io.to(otherSocketId).emit('messagesRead', {
+              threadId: targetThreadId,
+              conversationId: targetThreadId,
+              type: 'CLOSET',
+              readBy: userId,
+              updatedCount: result.count,
+            });
+          }
+        }
+
+        return {
+          success: true,
+          message: 'All closet chat messages marked as read successfully',
+          type: 'CLOSET',
+          conversationId: targetThreadId,
+          updatedCount: result.count,
+        };
+      } else {
+        // Mark ALL unread closet chat messages received by this user as seen
+        const result = await this.prisma.closetChatMessage.updateMany({
+          where: {
+            receiverId: userId,
+            isSeen: false,
+          },
+          data: {
+            isSeen: true,
+          },
+        });
+
+        return {
+          success: true,
+          message: 'All closet chat messages marked as read successfully',
+          type: 'CLOSET',
+          updatedCount: result.count,
+        };
+      }
+    } else {
+      throw new BadRequestException('Invalid conversation type. Must be NORMAL or CLOSET');
+    }
+  }
 }
