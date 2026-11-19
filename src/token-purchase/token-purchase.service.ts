@@ -6,6 +6,7 @@ import { TokenService } from '../token/token.service';
 import { UserService } from '../user/user.service';
 import { NotificationService } from '../notification/notification.service';
 import { WalletService } from '../wallet/wallet.service';
+import { EarningsCreditService } from '../wallet/earnings-credit.service';
 import { PagBankService } from '../pagbank/pagbank.service';
 import { PaymentProviderResolver } from '../marketPlace/payment/payment-provider.resolver';
 import { CurrencyConverterService } from '../common/currency/currency-converter.service';
@@ -339,6 +340,7 @@ export class TokenPurchaseService {
     private readonly pagBankService: PagBankService,
     private readonly paymentProviderResolver: PaymentProviderResolver,
     private readonly currencyConverter: CurrencyConverterService,
+    private readonly earningsCreditService: EarningsCreditService,
   ) {
     this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
       apiVersion: '2024-06-20',
@@ -966,29 +968,18 @@ export class TokenPurchaseService {
           Math.round(Number(completedDonation.amount || 0) * 100);
 
         if (receiverAmountCents > 0) {
-          const seller = await this.prisma.user.findUnique({
-            where: { id: completedDonation.vendorId },
-            select: { paymentProvider: true, country: true },
-          });
-          const isSellerBrazil = isBrazilUser(seller?.country);
-          const provider: 'PAGBANK' | 'STRIPE' = 'STRIPE';
-          const targetCurrency = isSellerBrazil ? 'brl' : 'usd';
-          const sessionCurrency = (session.currency || 'usd').toLowerCase();
-
-          const finalMinor =
-            targetCurrency !== sessionCurrency
-              ? await this.currencyConverter.convertMinor(receiverAmountCents, sessionCurrency, targetCurrency)
-              : receiverAmountCents;
-
-          await this.walletService.creditAvailable({
+          // Converted with Stripe's rate (or deferred and retried if Stripe FX is unavailable).
+          await this.earningsCreditService.creditEarning({
             userId: completedDonation.vendorId,
-            amountMinor: finalMinor,
-            currency: targetCurrency,
-            provider,
+            sourceAmountMinor: receiverAmountCents,
+            sourceCurrency: (session.currency || 'usd').toLowerCase(),
             source: 'MISSION_DONATION',
             refType: 'PAYMENT',
             refId: session.id,
-            note: `Mission donation ${completedDonation.id}${targetCurrency !== sessionCurrency ? ` (converted from ${receiverAmountCents} ${sessionCurrency.toUpperCase()} cents)` : ''}`,
+            note: `Mission donation ${completedDonation.id}`,
+            mode: 'AVAILABLE',
+            rateType: 'exchange',
+            receipt: { type: 'DONATION', id: completedDonation.id },
           });
         }
       }

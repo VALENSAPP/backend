@@ -4,6 +4,7 @@ import axios, { AxiosRequestConfig } from 'axios';
 import { createHmac } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveKycPaymentProvider } from '../common/payment-provider.util';
+import { toIsoAlpha2 } from '../common/country.util';
 
 const SUMSUB_KYC_LEVEL_NAME = process.env.SUMSUB_KYC_LEVEL_NAME || process.env.SUMSUB_LEVEL_NAME || 'basic-kyc-level';
 const SUMSUB_TTL_SEC = 600;
@@ -36,6 +37,11 @@ export class KycService {
     };
     if (normalizedCountry) {
       updateData.country = normalizedCountry;
+    }
+    // Verified document country (ISO alpha-2). Locked: decides wallet currency and Stripe account country.
+    const kycCountry = toIsoAlpha2(rawDocCountry);
+    if (kycCountry) {
+      updateData.kycCountry = kycCountry;
     }
     await this.prisma.user.update({
       where: { id: userId },

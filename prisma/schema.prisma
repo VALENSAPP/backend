@@ -57,6 +57,18 @@ model User {
   pagbankAccessToken    String?                   @db.Text
   pagbankRefreshToken   String?                   @db.Text
   pagbankTokenExpiresAt DateTime?
+  /// ISO alpha-2 country from the verified KYC document. Locked; used for wallet currency and Stripe account country.
+  kycCountry            String?
+  /// Stripe Connect (Express) account snapshot, synced from account.updated webhooks.
+  stripeAccountCountry  String?
+  stripeAccountEmail    String?
+  stripeAccountStatus   String? // not_started | onboarding | in_review | requirements_due | enabled | restricted
+  stripeDetailsSubmitted Boolean                  @default(false)
+  stripePayoutsEnabled  Boolean                   @default(false)
+  stripeBankName        String?
+  stripeBankLast4       String?
+  stripeBankCurrency    String?
+  stripeAccountSyncedAt DateTime?
   refreshToken          String?
   refreshTokenExpiresAt DateTime?
   profileStatus         String                    @default("public")
@@ -176,6 +188,8 @@ model User {
   ebookPaymentsAsSeller       EbookPayments[]            @relation("EbookPaymentSeller")
   userAddrees                 UserAddrees[]
   sellerWallets               SellerWallet[]
+  pendingWalletCredits        PendingWalletCredit[]
+  payoutSettings              PayoutSettings?
   walletLedgerEntries         WalletLedgerEntry[]
   sentPlatformPointTransfers     PlatformPointTransfer[] @relation("SentPlatformPointTransfers")
   receivedPlatformPointTransfers PlatformPointTransfer[] @relation("ReceivedPlatformPointTransfers")
@@ -812,6 +826,13 @@ model Payment {
   createdAt             DateTime  @default(now())
   periodStart           DateTime?
   periodEnd             DateTime?
+  /// What the receiver actually got in their wallet (after Stripe FX), minor units.
+  receivedAmountMinor   Int?
+  receivedCurrency      String?
+  fxRate                Float?
+  fxQuoteId             String?
+  fxSource              String? // same_currency | stripe_fx_quote | legacy_ledger
+  fxConvertedAt         DateTime?
   user                  User      @relation("PaymentPayer", fields: [userId], references: [id], onDelete: Cascade)
   receiver              User?     @relation("PaymentReceiver", fields: [receiverId], references: [id])
 
@@ -1113,6 +1134,12 @@ model DonationData {
   createdAt               DateTime  @default(now())
   completedAt             DateTime?
   note                    String?
+  receivedAmountMinor     Int?
+  receivedCurrency        String?
+  fxRate                  Float?
+  fxQuoteId               String?
+  fxSource                String?
+  fxConvertedAt           DateTime?
   user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
@@ -1264,6 +1291,22 @@ model WithdrawalRecord {
   transferId     String? // Stripe transfer id or PagBank payout id
   status         String    @default("pending") // pending, processing, processing_transfer, success, failed, requires_onboarding
   failureReason  String?
+  /// Amount actually transferred from the platform balance (platform currency, e.g. usd).
+  transferAmountMinor Int?
+  transferCurrency    String?
+  fxRate              Float?
+  fxQuoteId           String?
+  transferredAt       DateTime?
+  /// Payout from the connected account to the user's bank.
+  payoutId            String?
+  payoutStatus        String? // pending_creation | pending | in_transit | paid | failed | canceled
+  payoutAmountMinor   Int?
+  payoutCurrency      String?
+  payoutArrivalDate   DateTime?
+  payoutAttempts      Int       @default(0)
+  paidAt              DateTime?
+  failedAt            DateTime?
+  isAutomatic         Boolean   @default(false)
   processingAt   DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -1273,6 +1316,8 @@ model WithdrawalRecord {
   @@index([status])
   @@index([provider])
   @@index([createdAt])
+  @@index([payoutId])
+  @@index([payoutStatus])
 }
 
 /// Per-user withdrawable earnings ledger (platform-held funds).
@@ -1307,6 +1352,11 @@ model WalletLedgerEntry {
   refType     String? // ORDER | PAYMENT | WITHDRAWAL
   refId       String?
   note        String?
+  /// Original payment amount/currency before Stripe FX conversion (null when not converted).
+  originalAmountMinor Int?
+  originalCurrency    String?
+  fxRate              Float?
+  fxQuoteId           String?
   createdAt   DateTime     @default(now())
   wallet      SellerWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -2732,4 +2782,46 @@ model UserMute {
   @@map("userMutes")
 }
 
+/// Earnings whose currency conversion could not be completed at payment time (Stripe FX unavailable).
+/// A cron job retries them; they are never credited with a guessed rate.
+model PendingWalletCredit {
+  id                 String    @id @default(uuid())
+  userId             String
+  mode               String // AVAILABLE | PENDING
+  source             String
+  refType            String
+  refId              String
+  sourceAmountMinor  Int
+  sourceCurrency     String
+  targetCurrency     String
+  rateType           String // base | exchange
+  note               String?
+  receiptType        String? // PAYMENT | DONATION
+  receiptId          String?
+  status             String    @default("PENDING") // PENDING | DONE | FAILED
+  attempts           Int       @default(0)
+  lastError          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([refType, refId, mode])
+  @@index([status])
+  @@index([userId])
+}
+
+/// Automatic payout preferences (Payout Method screen).
+model PayoutSettings {
+  id                 String    @id @default(uuid())
+  userId             String    @unique
+  autoPayoutEnabled  Boolean   @default(false)
+  intervalDays       Int       @default(7)
+  minimumAmountMinor Int       @default(2000)
+  nextRunAt          DateTime?
+  lastRunAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([autoPayoutEnabled, nextRunAt])
+}

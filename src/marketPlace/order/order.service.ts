@@ -8,6 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { WalletService } from '../../wallet/wallet.service';
 import { PagBankService } from '../../pagbank/pagbank.service';
 import { CurrencyConverterService } from '../../common/currency/currency-converter.service';
+import { EarningsCreditService } from '../../wallet/earnings-credit.service';
 import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser, normalizeCountryCode } from '../../common/payment-provider.util';
 import { BuyerOrderListQueryDto } from './dto/buyer-order-list-query.dto';
 import { OrderPayoutService } from './order-payout.service';
@@ -27,6 +28,7 @@ export class OrderService {
         @Inject(forwardRef(() => PagBankService))
         private readonly pagBankService: PagBankService,
         private readonly currencyConverter: CurrencyConverterService,
+        private readonly earningsCreditService: EarningsCreditService,
     ) {
         this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
             apiVersion: '2024-06-20',
@@ -284,12 +286,8 @@ export class OrderService {
                     totalPointsAwardedToBuyer += earnedPoints;
                 }
 
-                const sellerForNotif = await tx.user.findUnique({
-                    where: { id: item.sellerId },
-                    select: { paymentProvider: true, country: true },
-                });
-                const isSellerBrazil = isBrazilUser(sellerForNotif?.country);
-                const notifCurrency = isSellerBrazil ? 'BRL' : (paymentRecord.currency?.toUpperCase() || 'USD');
+                // Order total is in the currency the buyer paid; show it with that currency's symbol.
+                const notifCurrency = (paymentRecord.currency || 'usd').toUpperCase();
                 const notifSymbol = getCurrencySymbol(notifCurrency);
 
                 createdOrderIds.push(order.id);
@@ -304,29 +302,19 @@ export class OrderService {
                 });
 
                 if (sellerAmountMinor > 0) {
-                    const provider: 'PAGBANK' | 'STRIPE' = 'STRIPE';
-                    const targetCurrency = isSellerBrazil ? 'brl' : 'usd';
-                    const sourceCurrency = (paymentRecord.currency || targetCurrency).toLowerCase();
-
-                    let finalSellerAmountMinor = Math.round(sellerAmountMinor);
-                    if (sourceCurrency !== targetCurrency) {
-                        finalSellerAmountMinor = await this.currencyConverter.convertMinor(
-                            sellerAmountMinor,
-                            sourceCurrency,
-                            targetCurrency,
-                        );
-                    }
-
-                    await this.walletService.creditPending(
+                    // Pending (48h hold) credit in the seller's wallet currency, converted with Stripe's rate.
+                    // If Stripe FX is unavailable it is deferred and retried (order creation is not blocked).
+                    await this.earningsCreditService.creditEarning(
                         {
                             userId: item.sellerId,
-                            amountMinor: finalSellerAmountMinor,
-                            currency: targetCurrency,
-                            provider,
+                            sourceAmountMinor: Math.round(sellerAmountMinor),
+                            sourceCurrency: (paymentRecord.currency || 'usd').toLowerCase(),
                             source: 'MARKETPLACE',
                             refType: 'ORDER',
                             refId: order.id,
-                            note: `Marketplace order ${order.orderNumber}${sourceCurrency !== targetCurrency ? ` (converted from ${sellerAmountMinor} ${sourceCurrency.toUpperCase()})` : ''}`,
+                            note: `Marketplace order ${order.orderNumber}`,
+                            mode: 'PENDING',
+                            rateType: 'exchange',
                         },
                         tx,
                     );

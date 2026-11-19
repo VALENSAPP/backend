@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser } from '../common/payment-provider.util';
+import { formatCurrencyAmount, getCurrencySymbol } from '../common/payment-provider.util';
+import { resolveWalletCurrency } from '../common/country.util';
 import {
     WalletCreditParams,
     WalletLedgerEntryType,
@@ -22,6 +23,16 @@ export class WalletService {
 
     private normalizeProvider(provider?: WalletProvider): WalletProvider {
         return provider === 'PAGBANK' ? 'PAGBANK' : 'STRIPE';
+    }
+
+    private fxLedgerFields(params: WalletCreditParams) {
+        if (params.originalAmountMinor == null || !params.originalCurrency) return {};
+        return {
+            originalAmountMinor: Math.trunc(params.originalAmountMinor),
+            originalCurrency: params.originalCurrency.toLowerCase(),
+            fxRate: params.fxRate ?? null,
+            fxQuoteId: params.fxQuoteId ?? null,
+        };
     }
 
     private toMajor(amountMinor: number): number {
@@ -104,6 +115,7 @@ export class WalletService {
                     refType: params.refType,
                     refId: params.refId,
                     note: params.note,
+                    ...this.fxLedgerFields(params),
                 },
             });
 
@@ -162,6 +174,7 @@ export class WalletService {
                     refType: params.refType,
                     refId: params.refId,
                     note: params.note,
+                    ...this.fxLedgerFields(params),
                 },
             });
 
@@ -378,10 +391,9 @@ export class WalletService {
 
         const user = await this.prisma.user.findUnique({
             where: { id: userId },
-            select: { country: true },
+            select: { country: true, kycCountry: true },
         });
-        const isBrazil = isBrazilUser(user?.country);
-        const resolvedCurrency = (currency || (isBrazil ? 'BRL' : 'USD')).toUpperCase();
+        const resolvedCurrency = (currency || resolveWalletCurrency(user)).toUpperCase();
         const resolvedSymbol = getCurrencySymbol(resolvedCurrency);
 
         const items = wallets.map((w) => {
@@ -467,16 +479,21 @@ export class WalletService {
             }
 
             const wallet = await this.ensureWallet(client, params.userId, currency, provider);
-            if (wallet.availableBalance < amountMinor) {
-                throw new BadRequestException(
-                    `Insufficient available balance. Available: ${(wallet.availableBalance / 100).toFixed(2)}, requested: ${(amountMinor / 100).toFixed(2)}`,
-                );
-            }
 
-            const updatedWallet = await client.sellerWallet.update({
-                where: { id: wallet.id },
+            // Atomic check-and-decrement: two concurrent withdrawals can no longer both pass a
+            // "balance >= amount" read and drive the wallet negative.
+            const decremented = await client.sellerWallet.updateMany({
+                where: { id: wallet.id, availableBalance: { gte: amountMinor } },
                 data: { availableBalance: { decrement: amountMinor } },
             });
+            if (decremented.count !== 1) {
+                const current = await client.sellerWallet.findUnique({ where: { id: wallet.id } });
+                const available = current?.availableBalance ?? 0;
+                throw new BadRequestException(
+                    `Insufficient available balance. Available: ${(available / 100).toFixed(2)}, requested: ${(amountMinor / 100).toFixed(2)}`,
+                );
+            }
+            const updatedWallet = await client.sellerWallet.findUniqueOrThrow({ where: { id: wallet.id } });
 
             const entry = await client.walletLedgerEntry.create({
                 data: {

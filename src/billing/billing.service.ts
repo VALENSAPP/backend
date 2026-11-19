@@ -20,6 +20,10 @@ import { WalletService } from '../wallet/wallet.service';
 import { PagBankService } from '../pagbank/pagbank.service';
 import { PaymentProviderResolver } from '../marketPlace/payment/payment-provider.resolver';
 import { CurrencyConverterService } from '../common/currency/currency-converter.service';
+import { EarningsCreditService } from '../wallet/earnings-credit.service';
+import { StripeConnectService } from './stripe-connect.service';
+import { PayoutsService } from './payouts.service';
+import { resolveWalletCurrency } from '../common/country.util';
 import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser, normalizeCountryCode } from '../common/payment-provider.util';
 import Stripe from 'stripe';
 import { ethers } from 'ethers';
@@ -45,6 +49,9 @@ export class BillingService {
     private readonly pagBankService: PagBankService,
     private readonly paymentProviderResolver: PaymentProviderResolver,
     private readonly currencyConverter: CurrencyConverterService,
+    private readonly earningsCreditService: EarningsCreditService,
+    private readonly stripeConnectService: StripeConnectService,
+    private readonly payoutsService: PayoutsService,
   ) {
     this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
       apiVersion: '2024-06-20',
@@ -357,141 +364,39 @@ export class BillingService {
   async getWalletBalanceWithProviderAvailability(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { country: true },
+      select: { country: true, kycCountry: true },
     });
-    const isBrazil = isBrazilUser(user?.country);
-    const provider = await this.paymentProviderResolver.ensureUserPaymentProvider(userId);
-    const currency = isBrazil ? 'brl' : (provider === 'PAGBANK' ? 'brl' : 'usd');
+    const provider = 'STRIPE' as const;
+    const currency = resolveWalletCurrency(user);
     const currencySymbol = getCurrencySymbol(currency);
 
-    // Keep provider/currency scoped totals for withdrawal calculations.
     const wallet = await this.walletService.getBalance(userId, { currency, provider });
-
-    if (provider === 'PAGBANK') {
-      const appWithdrawableMinor = wallet.availableBalanceMinor;
-      return {
-        ...wallet,
-        provider,
-        currency,
-        currencySymbol,
-        formattedAvailableBalance: formatCurrencyAmount(this.toMajor(appWithdrawableMinor), currency),
-        appWithdrawableBalanceMinor: appWithdrawableMinor,
-        appWithdrawableBalance: this.toMajor(appWithdrawableMinor),
-        providerAvailableBalanceMinor: appWithdrawableMinor,
-        providerAvailableBalance: this.toMajor(appWithdrawableMinor),
-        providerPendingBalanceMinor: 0,
-        providerPendingBalance: 0,
-        effectiveWithdrawableNowMinor: appWithdrawableMinor,
-        effectiveWithdrawableNow: this.toMajor(appWithdrawableMinor),
-        providerAvailabilitySource: 'wallet',
-        providerAvailabilityNote:
-          'PagBank provider live balance API is not queried here. Effective amount uses wallet availability.',
-      };
-    }
-
     const appWithdrawableMinor = wallet.availableBalanceMinor;
 
-    try {
-      const stripeAccount = await this.stripe.accounts.retrieve();
-      const platformBalance = await this.stripe.balance.retrieve();
-      const providerAvailableMinor = this.sumStripeBalanceByCurrency(
-        platformBalance.available as Array<{ amount: number; currency: string }> | undefined,
-        currency,
-      );
-      const providerPendingMinor = this.sumStripeBalanceByCurrency(
-        platformBalance.pending as Array<{ amount: number; currency: string }> | undefined,
-        currency,
-      );
-      const effectiveMinor = Math.min(appWithdrawableMinor, providerAvailableMinor);
-
-      return {
-        ...wallet,
-        provider,
-        currency,
-        currencySymbol,
-        formattedAvailableBalance: formatCurrencyAmount(this.toMajor(appWithdrawableMinor), currency),
-        appWithdrawableBalanceMinor: appWithdrawableMinor,
-        appWithdrawableBalance: this.toMajor(appWithdrawableMinor),
-        providerAvailableBalanceMinor: providerAvailableMinor,
-        providerAvailableBalance: this.toMajor(providerAvailableMinor),
-        providerPendingBalanceMinor: providerPendingMinor,
-        providerPendingBalance: this.toMajor(providerPendingMinor),
-        effectiveWithdrawableNowMinor: effectiveMinor,
-        effectiveWithdrawableNow: this.toMajor(effectiveMinor),
-        providerAvailabilitySource: 'stripe_platform_balance',
-        stripeAccountId: stripeAccount.id,
-        stripeBalanceFetchedAt: new Date().toISOString(),
-      };
-    } catch (error: any) {
-      return {
-        ...wallet,
-        provider,
-        currency,
-        currencySymbol,
-        formattedAvailableBalance: formatCurrencyAmount(this.toMajor(appWithdrawableMinor), currency),
-        appWithdrawableBalanceMinor: appWithdrawableMinor,
-        appWithdrawableBalance: this.toMajor(appWithdrawableMinor),
-        providerAvailableBalanceMinor: null,
-        providerAvailableBalance: null,
-        providerPendingBalanceMinor: null,
-        providerPendingBalance: null,
-        effectiveWithdrawableNowMinor: null,
-        effectiveWithdrawableNow: null,
-        providerAvailabilitySource: 'stripe_platform_balance_error',
-        stripeBalanceFetchedAt: new Date().toISOString(),
-        providerAvailabilityError: error?.message || 'Unable to fetch Stripe platform balance',
-      };
-    }
+    // Same response shape as before, but the "provider" fields no longer expose the platform's own
+    // Stripe balance or account id to users. They mirror the user's wallet; platform liquidity is
+    // checked when the withdrawal transfer is created (a failed transfer is reversed automatically).
+    return {
+      ...wallet,
+      provider,
+      currency,
+      currencySymbol,
+      formattedAvailableBalance: formatCurrencyAmount(this.toMajor(appWithdrawableMinor), currency),
+      appWithdrawableBalanceMinor: appWithdrawableMinor,
+      appWithdrawableBalance: this.toMajor(appWithdrawableMinor),
+      providerAvailableBalanceMinor: appWithdrawableMinor,
+      providerAvailableBalance: this.toMajor(appWithdrawableMinor),
+      providerPendingBalanceMinor: wallet.pendingBalanceMinor,
+      providerPendingBalance: wallet.pendingBalance,
+      effectiveWithdrawableNowMinor: appWithdrawableMinor,
+      effectiveWithdrawableNow: this.toMajor(appWithdrawableMinor),
+      providerAvailabilitySource: 'wallet',
+    };
   }
 
-  /** Check if user has completed provider onboarding and can withdraw. */
-  async getOnboardingStatus(userId: string): Promise<{
-    canReceivePayments: boolean;
-    onboardingUrl?: string;
-    accountId?: string;
-    message?: string;
-    provider: 'STRIPE' | 'PAGBANK';
-    country?: string | null;
-  }> {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new BadRequestException('User not found');
-
-    const provider = await this.paymentProviderResolver.ensureUserPaymentProvider(userId);
-
-    if (provider === 'PAGBANK') {
-      const status = await this.pagBankService.getOnboardingStatus(userId);
-      return { ...status, country: user.country };
-    }
-
-    if (!user.stripeAccountId) {
-      return {
-        provider: 'STRIPE',
-        country: user.country,
-        canReceivePayments: false,
-        message: 'Please complete stripe onboarding',
-      };
-    }
-    try {
-      const account = await this.stripe.accounts.retrieve(user.stripeAccountId);
-      const canReceive = !!(account.details_submitted && account.payouts_enabled !== false);
-      return {
-        provider: 'STRIPE',
-        country: user.country,
-        canReceivePayments: canReceive,
-        accountId: user.stripeAccountId,
-        message: canReceive
-          ? undefined
-          : 'Finish onboarding (e.g. add bank account) to withdraw.',
-      };
-    } catch {
-      return {
-        provider: 'STRIPE',
-        country: user.country,
-        canReceivePayments: false,
-        accountId: user.stripeAccountId,
-        message: 'Stripe account not ready.',
-      };
-    }
+  /** Check if user has completed Stripe onboarding and can withdraw (existing fields kept, new fields added). */
+  async getOnboardingStatus(userId: string) {
+    return this.stripeConnectService.getOnboardingStatus(userId);
   }
 
   /** Throws if user cannot receive withdrawals to Connect (onboarding required). */
@@ -520,7 +425,12 @@ export class BillingService {
     if (!user) throw new BadRequestException('User not found');
   }
 
-  /** Credit seller available wallet (idempotent via payment ref). Uses seller paymentProvider and handles FX conversion if currency differs. */
+  /**
+   * Credit the receiver's available wallet (idempotent via payment ref).
+   * Conversion to the receiver's wallet currency uses Stripe's FX rate (EarningsCreditService);
+   * if Stripe FX is unavailable the credit is deferred and retried — never credited with a guessed rate.
+   * Tips use Stripe's base rate (no FX fee) so the receiver gets the whole amount.
+   */
   private async creditSellerAvailableWallet(params: {
     sellerUserId: string;
     amountMinor: number;
@@ -528,35 +438,21 @@ export class BillingService {
     refId: string;
     note?: string;
     currency?: string;
+    /** Payment row to stamp with the amount the receiver actually received. */
+    paymentId?: string;
   }) {
-    if (!params.sellerUserId || params.amountMinor <= 0) return;
-    const sellerUser = await this.prisma.user.findUnique({
-      where: { id: params.sellerUserId },
-      select: { country: true },
-    });
-    const isBrazil = isBrazilUser(sellerUser?.country);
-    const provider = await this.paymentProviderResolver.resolveProviderForUser(params.sellerUserId);
-    const targetCurrency = isBrazil ? 'brl' : (provider === 'PAGBANK' ? 'brl' : 'usd');
-    const sourceCurrency = (params.currency || targetCurrency).toLowerCase();
-
-    let amountMinor = Math.round(params.amountMinor);
-    if (sourceCurrency !== targetCurrency) {
-      amountMinor = await this.currencyConverter.convertMinor(
-        amountMinor,
-        sourceCurrency,
-        targetCurrency,
-      );
-    }
-
-    await this.walletService.creditAvailable({
+    if (!params.sellerUserId || params.amountMinor <= 0) return undefined;
+    return this.earningsCreditService.creditEarning({
       userId: params.sellerUserId,
-      amountMinor,
-      currency: targetCurrency,
-      provider,
+      sourceAmountMinor: Math.round(params.amountMinor),
+      sourceCurrency: (params.currency || 'usd').toLowerCase(),
       source: params.source,
       refType: 'PAYMENT',
       refId: params.refId,
-      note: `${params.note || 'Seller payment'}${sourceCurrency !== targetCurrency ? ` (converted from ${params.amountMinor} ${sourceCurrency.toUpperCase()})` : ''}`,
+      note: params.note || 'Seller payment',
+      mode: 'AVAILABLE',
+      rateType: params.source === 'TIP' ? 'base' : 'exchange',
+      receipt: params.paymentId ? { type: 'PAYMENT', id: params.paymentId } : undefined,
     });
   }
 
@@ -1248,10 +1144,20 @@ export class BillingService {
 
     const senderUser = await this.prisma.user.findUnique({
       where: { id: senderUserId },
-      select: { country: true },
+      select: { country: true, kycCountry: true },
     });
-    const isBrazilSender = isBrazilUser(senderUser?.country);
-    const currency = isBrazilSender ? 'brl' : 'usd';
+    // Tip is charged in the sender's currency (BRL for Brazil by KYC country, USD otherwise).
+    const currency = resolveWalletCurrency(senderUser);
+
+    const minTipMinor = Number(process.env[`MIN_TIP_${currency.toUpperCase()}_MINOR`] || process.env.MIN_TIP_MINOR || 0);
+    if (minTipMinor > 0 && Math.round(amount * 100) < minTipMinor) {
+      throw new BadRequestException({
+        message: `Minimum tip is ${formatCurrencyAmount(minTipMinor / 100, currency)}`,
+        code: 'BELOW_MINIMUM_TIP',
+        minimumAmount: minTipMinor / 100,
+        currency: currency.toUpperCase(),
+      });
+    }
 
     const amountCents = Math.round(amount * 100);
     const {
@@ -2074,6 +1980,7 @@ export class BillingService {
         refId: invoice.id,
         currency: invoice.currency || 'usd',
         note: `Pay-following subscription payment ${payment.id}`,
+        paymentId: payment.id,
       });
       return;
     }
@@ -2326,6 +2233,7 @@ export class BillingService {
         refId: paymentIntent.id,
         currency: paymentIntent.currency || 'usd',
         note: `Pay-following payment ${payment.id}`,
+        paymentId: payment.id,
       });
     }
   }
@@ -2401,32 +2309,67 @@ export class BillingService {
     const currency = paymentIntent.currency?.toUpperCase() ?? 'USD';
     const receiverUserId = paymentIntent.metadata?.receiverUserId;
 
-    await this.prisma.payment.create({
-      data: {
-        user: { connect: { id: user.id } },
-        ...(receiverUserId && { receiver: { connect: { id: receiverUserId } } }),
-        amount: receiverAmount,
-        platformFee,
-        totalAmount,
-        currency,
-        status: 'succeeded',
-        forPayment: 'TIP',
-        stripePaymentIntentId: paymentIntent.id,
-      },
+    // Idempotent: Stripe can deliver the same webhook more than once.
+    const existingPayment = await this.prisma.payment.findFirst({
+      where: { stripePaymentIntentId: paymentIntent.id, forPayment: 'TIP' },
+      select: { id: true },
     });
 
+    // The Payment row is the sender's record: what they sent, in the currency they paid.
+    const payment = existingPayment
+      ? existingPayment
+      : await this.prisma.payment.create({
+        data: {
+          user: { connect: { id: user.id } },
+          ...(receiverUserId && { receiver: { connect: { id: receiverUserId } } }),
+          amount: receiverAmount,
+          platformFee,
+          totalAmount,
+          currency,
+          status: 'succeeded',
+          forPayment: 'TIP',
+          stripePaymentIntentId: paymentIntent.id,
+        },
+        select: { id: true },
+      });
+
     if (receiverUserId) {
+      // Tips: 0% platform fee — the receiver gets the whole amount, converted at Stripe's base rate.
       const receiverAmountCents =
         Number(paymentIntent.metadata?.receiverAmountCents) ||
         Math.round(receiverAmount * 100);
-      await this.creditSellerAvailableWallet({
+      const result = await this.creditSellerAvailableWallet({
         sellerUserId: receiverUserId,
         amountMinor: receiverAmountCents,
         source: 'TIP',
         refId: paymentIntent.id,
         currency: paymentIntent.currency || 'usd',
         note: `Tip payment ${paymentIntent.id}`,
+        paymentId: payment.id,
       });
+
+      if (result?.status === 'credited' && result.receivedAmountMinor) {
+        try {
+          const received = formatCurrencyAmount(result.receivedAmountMinor / 100, result.targetCurrency);
+          const sent = formatCurrencyAmount(receiverAmountCents / 100, paymentIntent.currency || 'usd');
+          const converted = (paymentIntent.currency || 'usd').toLowerCase() !== result.targetCurrency;
+          await this.notificationService.sendNotificationToUser(
+            receiverUserId,
+            'Tip received',
+            converted ? `You received ${received} (from ${sent}).` : `You received ${received}.`,
+            {
+              type: 'tip_received',
+              paymentId: payment.id,
+              receivedAmount: (result.receivedAmountMinor / 100).toFixed(2),
+              receivedCurrency: result.targetCurrency.toUpperCase(),
+              sentAmount: (receiverAmountCents / 100).toFixed(2),
+              sentCurrency: currency,
+            },
+          );
+        } catch (notificationError) {
+          this.logger.warn(`Tip received notification failed: ${(notificationError as any)?.message}`);
+        }
+      }
     }
   }
 
@@ -4173,199 +4116,13 @@ export class BillingService {
     return { status: latest.periodEnd > now ? (isPt ? 'ACTIVE' : 'ACTIVE') : (isPt ? 'INACTIVE' : 'INACTIVE') };
   }
 
-  /**
-   * Withdraw from available wallet balance to the user's connected account (Stripe or PagBank).
-   * Pending (48h marketplace) balance cannot be withdrawn.
-   */
+  /** Withdraw available wallet balance to the user's bank via Stripe Connect (see PayoutsService). */
   async requestWithdrawal(userId: string, amount: number) {
-    await assertUserKyc(this.prisma, userId, 'PAYER');
-    if (!userId) throw new BadRequestException('User ID required');
-    if (typeof amount !== 'number' || Number.isNaN(amount)) {
-      throw new BadRequestException('Invalid withdrawal amount');
-    }
-    if (amount < MIN_WITHDRAWAL_MAJOR) {
-      throw new BadRequestException(`Minimum withdrawal is ${MIN_WITHDRAWAL_MAJOR}`);
-    }
-
-    const amountMinor = Math.round(amount * 100);
-    if (amountMinor <= 0) {
-      throw new BadRequestException('Invalid withdrawal amount');
-    }
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { country: true },
-    });
-    const isBrazil = isBrazilUser(user?.country);
-    const provider = await this.paymentProviderResolver.ensureUserPaymentProvider(userId);
-    const currency = isBrazil || provider === 'PAGBANK' ? 'brl' : 'usd';
-
-    if (provider === 'STRIPE') {
-      await this.requireCanReceivePayments(userId);
-    } else {
-      const status = await this.pagBankService.getOnboardingStatus(userId);
-      if (!status.canReceivePayments) {
-        throw new BadRequestException(
-          status.message || 'Complete PagBank onboarding before withdrawing.',
-        );
-      }
-    }
-
-    const balance = await this.walletService.getBalance(userId, { currency, provider });
-    if (balance.availableBalanceMinor < amountMinor) {
-      throw new BadRequestException(
-        `Insufficient available balance. Available: ${balance.availableBalance.toFixed(2)}, requested: ${amount.toFixed(2)}. Pending (${balance.pendingBalance.toFixed(2)}) cannot be withdrawn until the 48h protection window ends.`,
-      );
-    }
-
-    const withdrawal = await this.prisma.withdrawalRecord.create({
-      data: {
-        userId,
-        withdrawAmount: amount,
-        amountMinor,
-        currency,
-        provider,
-        status: 'processing',
-        processingAt: new Date(),
-      },
-    });
-
-    try {
-      await this.walletService.debitAvailableForWithdrawal({
-        userId,
-        amountMinor,
-        currency,
-        provider,
-        withdrawalId: withdrawal.id,
-        note: `Withdrawal request ${withdrawal.id}`,
-      });
-
-      let transferId: string;
-
-      if (provider === 'PAGBANK') {
-        const payout = await this.pagBankService.payoutToConnectedAccount({
-          userId,
-          amountMinor,
-          currency,
-          withdrawalId: withdrawal.id,
-        });
-        transferId = payout.transferId;
-      } else {
-        const destinationAccountId = await this.requireCanReceivePayments(userId);
-        const transfer = await this.stripe.transfers.create(
-          {
-            amount: amountMinor,
-            currency,
-            destination: destinationAccountId,
-            metadata: {
-              type: 'seller_wallet_withdrawal',
-              withdrawalId: withdrawal.id,
-              userId,
-            },
-          },
-          { idempotencyKey: `wallet-withdrawal-${withdrawal.id}` },
-        );
-        transferId = transfer.id;
-      }
-
-      const updated = await this.prisma.withdrawalRecord.update({
-        where: { id: withdrawal.id },
-        data: {
-          status: 'success',
-          transferId,
-          txhash: transferId,
-        },
-      });
-
-      try {
-        await this.notificationService.sendNotificationToUser(
-          userId,
-          'Withdrawal Successful',
-          `Your withdrawal of ${amount.toFixed(2)} ${currency.toUpperCase()} has been sent to your connected account.`,
-          {
-            type: 'withdrawal_success',
-            withdrawalId: withdrawal.id,
-            amount: amount.toString(),
-            transferId,
-            provider,
-          },
-        );
-      } catch (notificationError) {
-        console.error('Failed to send withdrawal success notification:', notificationError);
-      }
-
-      const nextBalance = await this.walletService.getBalance(userId, { currency, provider });
-
-      return {
-        message: 'Withdrawal sent to your connected account',
-        withdrawal: {
-          id: updated.id,
-          amount: updated.withdrawAmount,
-          amountMinor: updated.amountMinor,
-          currency: updated.currency,
-          provider: updated.provider,
-          status: updated.status,
-          transferId: updated.transferId,
-          createdAt: updated.createdAt,
-        },
-        balance: {
-          pendingBalance: nextBalance.pendingBalance,
-          availableBalance: nextBalance.availableBalance,
-          withdrawableBalance: nextBalance.withdrawableBalance,
-        },
-      };
-    } catch (error: any) {
-      const failureReason = error?.message || 'Withdrawal transfer failed';
-
-      try {
-        await this.walletService.reverseWithdrawal({
-          userId,
-          amountMinor,
-          currency,
-          provider,
-          withdrawalId: withdrawal.id,
-          note: failureReason,
-        });
-      } catch (reverseError) {
-        console.error('Failed to reverse wallet debit after withdrawal error:', reverseError);
-      }
-
-      await this.prisma.withdrawalRecord.update({
-        where: { id: withdrawal.id },
-        data: {
-          status: error?.message?.includes('onboarding') || error?.message?.includes('Complete')
-            ? 'requires_onboarding'
-            : 'failed',
-          failureReason,
-        },
-      });
-
-      if (error instanceof BadRequestException) throw error;
-      throw new BadRequestException(failureReason);
-    }
+    return this.payoutsService.requestWithdrawal(userId, amount);
   }
 
   async getWithdrawalHistory(userId: string) {
-    const withdrawals = await this.prisma.withdrawalRecord.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    return {
-      withdrawals: withdrawals.map((w) => ({
-        id: w.id,
-        amount: w.withdrawAmount,
-        amountMinor: w.amountMinor,
-        currency: w.currency,
-        provider: w.provider,
-        status: w.status,
-        transferId: w.transferId || w.txhash,
-        failureReason: w.failureReason,
-        processingAt: w.processingAt,
-        createdAt: w.createdAt,
-        updatedAt: w.updatedAt,
-      })),
-    };
+    return this.payoutsService.getWithdrawalHistory(userId);
   }
 
   /** @deprecated Prefer requestWithdrawal which transfers immediately. */
@@ -4373,79 +4130,13 @@ export class BillingService {
     return;
   }
 
-  // Generate provider onboarding link (Stripe Connect or PagBank Connect).
-  // We create and persist stripeAccountId on first Stripe link request. If the user closes the
-  // onboarding URL without completing, we keep the same account and issue a new link
-  // next time (links expire ~30 min). Withdrawals are only allowed when onboarding is
-  // complete (requireCanReceivePayments checks details_submitted).
+  /**
+   * Stripe Connect (Express) onboarding link. The account is created with the user's real (KYC) country,
+   * transfers capability only, manual payout schedule. Response shape unchanged: { onboardingUrl, provider }.
+   */
   async createAccountOnboardingLink(userId: string) {
-    const provider = await this.paymentProviderResolver.ensureUserPaymentProvider(userId);
-
-    if (provider === 'PAGBANK') {
-      return this.pagBankService.createAccountOnboardingLink(userId);
-    }
-
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new BadRequestException('User not found');
-
-    let stripeAccountId = user.stripeAccountId;
-    if (!stripeAccountId) {
-      try {
-        const account = await this.stripe.accounts.create({
-          type: 'express',
-          country: user.country && user.country !== 'BR' ? user.country : 'US',
-          email: user.email || undefined,
-          capabilities: {
-            card_payments: { requested: true },
-            transfers: { requested: true },
-          },
-        });
-
-        stripeAccountId = account.id;
-
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: { stripeAccountId },
-        });
-      } catch (error: any) {
-        console.error('Stripe error creating account:', {
-          message: error.message,
-          type: error.type,
-          code: error.code,
-          requestId: error.requestId,
-          raw: error.raw,
-        });
-        throw error;
-      }
-    } else {
-      await this.stripe.accounts.update(stripeAccountId, {
-        capabilities: {
-          card_payments: { requested: true },
-          transfers: { requested: true },
-        },
-      });
-    }
-
-    try {
-      // Use backend URL so Stripe redirects to our success page (GET /withdrawal/success). Set to your API base, e.g. https://api.valenscorp.com
-      const baseUrl = (process.env.STRIPE_CONNECT_RETURN_BASE_URL || process.env.BACKEND_URL || process.env.FRONTEND_URL || '').replace(/\/$/, '');
-      if (!baseUrl) {
-        throw new BadRequestException(
-          'Set STRIPE_CONNECT_RETURN_BASE_URL, BACKEND_URL, or FRONTEND_URL so Stripe can redirect after onboarding.',
-        );
-      }
-      const accountLink = await this.stripe.accountLinks.create({
-        account: stripeAccountId,
-        refresh_url: `${baseUrl}/withdrawal/reauth`,
-        return_url: `${baseUrl}/withdrawal/success`,
-        type: 'account_onboarding',
-      });
-
-      return { onboardingUrl: accountLink.url, provider: 'STRIPE' as const };
-    } catch (error: any) {
-      console.error('Error creating account link:', error.message);
-      throw new BadRequestException('Failed to create onboarding link. Please try again later.');
-    }
+    const result = await this.stripeConnectService.createOnboardingLink(userId);
+    return { onboardingUrl: result.onboardingUrl, provider: result.provider, country: result.country };
   }
 
   async handlePagBankConnectCallback(code: string, state: string) {
@@ -4899,10 +4590,16 @@ export class BillingService {
       Number(session.metadata?.receiverAmountCents) ||
       Math.max(0, Math.round(amountCents * (1 - this.PLATFORM_FEE_PERCENT)));
 
+    const fanPayment = await this.prisma.payment.findFirst({
+      where: { stripePaymentIntentId: customPaymentIntentId, forPayment: 'fanSubscriptionBuy' },
+      select: { id: true },
+    });
+
     await this.creditSellerAvailableWallet({
       sellerUserId: buyUserId,
       amountMinor: receiverAmountCents,
       source: 'FAN_SUBSCRIPTION',
+      paymentId: fanPayment?.id,
       refId: customPaymentIntentId,
       currency: session.currency || 'usd',
       note: `Fan subscription buy ${session.id}`,
@@ -5496,31 +5193,88 @@ export class BillingService {
     });
   }
 
-  async getReceivedTotals(userId: string) {
-    const [payFollowingSum, tipSum, missionDonationSum, usdtSum, paidOrdersSummary, shopEbookSummary] = await Promise.all([
+  /**
+   * Receiver's view of a Payment/DonationData row: `amount`/`currency` become what the receiver got
+   * (after Stripe FX); the original values stay available as sentAmount/sentCurrency.
+   */
+  private asReceiverView<T extends { amount?: number | null; currency?: string | null; receivedAmountMinor?: number | null; receivedCurrency?: string | null }>(row: T) {
+    if (row.receivedAmountMinor == null || !row.receivedCurrency) {
+      return { ...row, sentAmount: row.amount, sentCurrency: row.currency };
+    }
+    const receivedCurrency = row.receivedCurrency.toUpperCase();
+    return {
+      ...row,
+      sentAmount: row.amount,
+      sentCurrency: row.currency,
+      amount: Number((row.receivedAmountMinor / 100).toFixed(2)),
+      currency: receivedCurrency,
+      currencySymbol: getCurrencySymbol(receivedCurrency),
+      formattedAmount: formatCurrencyAmount(row.receivedAmountMinor / 100, receivedCurrency),
+    };
+  }
+
+  /** Receiver's view of one record: stamped received amount when present, legacy amount otherwise. */
+  private receivedMajor(row: { amount?: number | null; receivedAmountMinor?: number | null }): number {
+    if (row.receivedAmountMinor != null) return row.receivedAmountMinor / 100;
+    return Number(row.amount || 0);
+  }
+
+  /** Sum of what a receiver actually received for Payment rows (after Stripe FX). */
+  private async sumReceivedPayments(where: Prisma.PaymentWhereInput): Promise<number> {
+    const [stamped, legacy] = await Promise.all([
       this.prisma.payment.aggregate({
-        where: {
-          receiverId: userId,
-          forPayment: 'following',
-          status: 'succeeded',
-        },
-        _sum: { amount: true },
+        where: { AND: [where, { receivedAmountMinor: { not: null } }] },
+        _sum: { receivedAmountMinor: true },
       }),
       this.prisma.payment.aggregate({
-        where: {
-          receiverId: userId,
-          forPayment: 'TIP',
-          status: 'succeeded',
-        },
+        where: { AND: [where, { receivedAmountMinor: null }] },
         _sum: { amount: true },
+      }),
+    ]);
+    return Number(stamped._sum.receivedAmountMinor ?? 0) / 100 + Number(legacy._sum.amount ?? 0);
+  }
+
+  /** Sum of what a receiver actually received for DonationData rows (after Stripe FX). */
+  private async sumReceivedDonations(where: Prisma.DonationDataWhereInput): Promise<number> {
+    const [stamped, legacy] = await Promise.all([
+      this.prisma.donationData.aggregate({
+        where: { AND: [where, { receivedAmountMinor: { not: null } }] },
+        _sum: { receivedAmountMinor: true },
       }),
       this.prisma.donationData.aggregate({
-        where: {
-          vendorId: userId,
-          status: 'completed',
-          action: { in: ['missionDonation', 'donate'] },
-        },
+        where: { AND: [where, { receivedAmountMinor: null }] },
         _sum: { amount: true },
+      }),
+    ]);
+    return Number(stamped._sum.receivedAmountMinor ?? 0) / 100 + Number(legacy._sum.amount ?? 0);
+  }
+
+  /** Receiver's wallet currency, for labelling received totals (additive response fields). */
+  private async getReceiverCurrencyInfo(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { country: true, kycCountry: true },
+    });
+    const currency = resolveWalletCurrency(user).toUpperCase();
+    return { currency, currencySymbol: getCurrencySymbol(currency) };
+  }
+
+  async getReceivedTotals(userId: string) {
+    const [payFollowingSum, tipSum, missionDonationSum, usdtSum, paidOrdersSummary, shopEbookSummary] = await Promise.all([
+      this.sumReceivedPayments({
+        receiverId: userId,
+        forPayment: 'following',
+        status: 'succeeded',
+      }),
+      this.sumReceivedPayments({
+        receiverId: userId,
+        forPayment: 'TIP',
+        status: 'succeeded',
+      }),
+      this.sumReceivedDonations({
+        vendorId: userId,
+        status: 'completed',
+        action: { in: ['missionDonation', 'donate'] },
       }),
       this.prisma.digital_transaction.aggregate({
         where: { receiverId: userId },
@@ -5553,13 +5307,16 @@ export class BillingService {
     const totalShopEarning = totalShopItemsEarning + totalShopEbookEarning;
 
     const totalReceived =
-      Number(payFollowingSum._sum.amount ?? 0)
-      + Number(tipSum._sum.amount ?? 0)
-      + Number(missionDonationSum._sum.amount ?? 0)
+      Number(payFollowingSum)
+      + Number(tipSum)
+      + Number(missionDonationSum)
       + Number(usdtSum._sum.amount ?? 0)
       + totalShopEarning;
 
+    const currencyInfo = await this.getReceiverCurrencyInfo(userId);
+
     return {
+      ...currencyInfo,
       totalReceived: Number(totalReceived.toFixed(2)),
       totalShopItemsEarning: Number(totalShopItemsEarning.toFixed(2)),
       totalShopEbookEarning: Number(totalShopEbookEarning.toFixed(2)),
@@ -5569,29 +5326,20 @@ export class BillingService {
 
   private async getAllTimeEarningTotals(userId: string) {
     const [payFollowingSum, tipSum, missionDonationSum, usdtSum, paidOrdersSummary, shopEbookSummary] = await Promise.all([
-      this.prisma.payment.aggregate({
-        where: {
-          receiverId: userId,
-          forPayment: 'following',
-          status: 'succeeded',
-        },
-        _sum: { amount: true },
+      this.sumReceivedPayments({
+        receiverId: userId,
+        forPayment: 'following',
+        status: 'succeeded',
       }),
-      this.prisma.payment.aggregate({
-        where: {
-          receiverId: userId,
-          forPayment: 'TIP',
-          status: 'succeeded',
-        },
-        _sum: { amount: true },
+      this.sumReceivedPayments({
+        receiverId: userId,
+        forPayment: 'TIP',
+        status: 'succeeded',
       }),
-      this.prisma.donationData.aggregate({
-        where: {
-          vendorId: userId,
-          status: 'completed',
-          action: { in: ['missionDonation', 'donate'] },
-        },
-        _sum: { amount: true },
+      this.sumReceivedDonations({
+        vendorId: userId,
+        status: 'completed',
+        action: { in: ['missionDonation', 'donate'] },
       }),
       this.prisma.digital_transaction.aggregate({
         where: { receiverId: userId },
@@ -5618,9 +5366,9 @@ export class BillingService {
       }),
     ]);
 
-    const payFollowingTotalAllTime = Number(payFollowingSum._sum.amount ?? 0);
-    const tipTotalAllTime = Number(tipSum._sum.amount ?? 0);
-    const missionDonationTotalAllTime = Number(missionDonationSum._sum.amount ?? 0);
+    const payFollowingTotalAllTime = Number(payFollowingSum);
+    const tipTotalAllTime = Number(tipSum);
+    const missionDonationTotalAllTime = Number(missionDonationSum);
     const usdtTotalAllTime = Number(usdtSum._sum.amount ?? 0);
     const totalShopItemsEarningAllTime = Number(
       (Number(paidOrdersSummary._sum.total || 0) - Number(paidOrdersSummary._sum.serviceFee || 0)).toFixed(2),
@@ -5673,6 +5421,7 @@ export class BillingService {
         },
         select: {
           amount: true,
+          receivedAmountMinor: true,
           createdAt: true,
         },
         orderBy: { createdAt: 'asc' },
@@ -5700,7 +5449,7 @@ export class BillingService {
     payFollowingRows.forEach((row) => {
       const key = row.createdAt.toISOString().slice(0, 10);
       const current = dayAmountMap.get(key) || 0;
-      dayAmountMap.set(key, current + Number(row.amount || 0));
+      dayAmountMap.set(key, current + this.receivedMajor(row));
     });
 
     const graphData = labels.map((date) => ({
@@ -5715,7 +5464,10 @@ export class BillingService {
     const payFollowingPercentageOfTotalEarning =
       totalEarning > 0 ? Number(((payFollowingTotal / totalEarning) * 100).toFixed(2)) : 0;
 
+    const currencyInfo = await this.getReceiverCurrencyInfo(userId);
+
     return {
+      ...currencyInfo,
       range: '7d',
       startDate: startDate.toISOString(),
       endDate: now.toISOString(),
@@ -5751,6 +5503,7 @@ export class BillingService {
         },
         select: {
           amount: true,
+          receivedAmountMinor: true,
           createdAt: true,
         },
         orderBy: { createdAt: 'asc' },
@@ -5778,7 +5531,7 @@ export class BillingService {
     tipRows.forEach((row) => {
       const key = row.createdAt.toISOString().slice(0, 10);
       const current = dayAmountMap.get(key) || 0;
-      dayAmountMap.set(key, current + Number(row.amount || 0));
+      dayAmountMap.set(key, current + this.receivedMajor(row));
     });
 
     const graphData = labels.map((date) => ({
@@ -5793,7 +5546,10 @@ export class BillingService {
     const tipPercentageOfTotalEarning =
       totalEarning > 0 ? Number(((totalTipEarning / totalEarning) * 100).toFixed(2)) : 0;
 
+    const currencyInfo = await this.getReceiverCurrencyInfo(userId);
+
     return {
+      ...currencyInfo,
       range: '7d',
       startDate: startDate.toISOString(),
       endDate: now.toISOString(),
@@ -5812,20 +5568,17 @@ export class BillingService {
 
     await this.ensureUserExists(normalizedUserId);
 
-    const tipSummary = await this.prisma.payment.aggregate({
-      where: {
-        receiverId: normalizedUserId,
-        forPayment: 'TIP',
-        status: 'succeeded',
-      },
-      _sum: {
-        amount: true,
-      },
+    const tipSummary = await this.sumReceivedPayments({
+      receiverId: normalizedUserId,
+      forPayment: 'TIP',
+      status: 'succeeded',
     });
 
-    const totalTipEarning = Number(Number(tipSummary._sum.amount ?? 0).toFixed(2));
+    const totalTipEarning = Number(Number(tipSummary).toFixed(2));
+    const currencyInfo = await this.getReceiverCurrencyInfo(normalizedUserId);
 
     return {
+      ...currencyInfo,
       userId: normalizedUserId,
       totalTipEarning,
     };
@@ -5856,6 +5609,7 @@ export class BillingService {
         },
         select: {
           amount: true,
+          receivedAmountMinor: true,
           createdAt: true,
         },
         orderBy: { createdAt: 'asc' },
@@ -5883,7 +5637,7 @@ export class BillingService {
     missionDonationRows.forEach((row) => {
       const key = row.createdAt.toISOString().slice(0, 10);
       const current = dayAmountMap.get(key) || 0;
-      dayAmountMap.set(key, current + Number(row.amount || 0));
+      dayAmountMap.set(key, current + this.receivedMajor(row));
     });
 
     const graphData = labels.map((date) => ({
@@ -5898,7 +5652,10 @@ export class BillingService {
     const missionDonationsPercentageOfTotalEarning =
       totalEarning > 0 ? Number(((totalMissionDonationsEarning / totalEarning) * 100).toFixed(2)) : 0;
 
+    const currencyInfo = await this.getReceiverCurrencyInfo(userId);
+
     return {
+      ...currencyInfo,
       range: '7d',
       startDate: startDate.toISOString(),
       endDate: now.toISOString(),
@@ -6295,9 +6052,9 @@ export class BillingService {
     ]);
 
     const combined = [
-      ...followingPayments.map((p) => ({ ...p, typeTransaction: 'payFollowing', type: 'credit' })),
-      ...tipPayments.map((p) => ({ ...p, typeTransaction: 'tip', type: 'credit' })),
-      ...missionDonations.map((d) => ({ ...d, typeTransaction: 'donation', type: 'credit' })),
+      ...followingPayments.map((p) => ({ ...this.asReceiverView(p), typeTransaction: 'payFollowing', type: 'credit' })),
+      ...tipPayments.map((p) => ({ ...this.asReceiverView(p), typeTransaction: 'tip', type: 'credit' })),
+      ...missionDonations.map((d) => ({ ...this.asReceiverView(d), typeTransaction: 'donation', type: 'credit' })),
       ...usdtTransfers.map((t) => ({ ...t, typeTransaction: 'usdt', type: 'credit' })),
       ...paidOrders.map((o) => {
         const sellerEarnings = o.sellerAmountMinor != null
@@ -6349,9 +6106,12 @@ export class BillingService {
       + totalShopEbookPayments;
     const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / safeLimit);
 
-    const payFollowingUserReceived = Number(followingPaymentsSummary._sum.amount ?? 0);
-    const tipUserReceived = Number(tipPaymentsSummary._sum.amount ?? 0);
-    const donationUserReceived = Number(missionDonationsSummary._sum.amount ?? 0);
+    // What the receiver actually received (after Stripe FX) — matches their wallet currency.
+    const [payFollowingUserReceived, tipUserReceived, donationUserReceived] = await Promise.all([
+      this.sumReceivedPayments({ receiverId: userId, forPayment: 'following', status: 'succeeded' }),
+      this.sumReceivedPayments({ receiverId: userId, forPayment: 'TIP', status: 'succeeded' }),
+      this.sumReceivedDonations({ vendorId: userId, status: 'completed', action: { in: ['missionDonation', 'donate'] } }),
+    ]);
     const usdtUserReceived = Number(usdtTransfersSummary._sum.amount ?? 0);
     const paidOrdersUserReceived = Number(
       (Number(paidOrdersSummary._sum.total || 0) - Number(paidOrdersSummary._sum.serviceFee || 0)).toFixed(2),
@@ -6498,7 +6258,7 @@ export class BillingService {
         ]);
 
         combined = [
-          ...creditPayments.map((p) => ({ ...p, typeTransaction: 'payFollowing', type: 'credit' })),
+          ...creditPayments.map((p) => ({ ...this.asReceiverView(p), typeTransaction: 'payFollowing', type: 'credit' })),
           ...debitPayments.map((p) => ({ ...p, typeTransaction: 'payFollowing', type: 'debit' })),
         ].sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -6540,7 +6300,7 @@ export class BillingService {
         ]);
 
         combined = [
-          ...creditPayments.map((p) => ({ ...p, typeTransaction: 'tip', type: 'credit' })),
+          ...creditPayments.map((p) => ({ ...this.asReceiverView(p), typeTransaction: 'tip', type: 'credit' })),
           ...debitPayments.map((p) => ({ ...p, typeTransaction: 'tip', type: 'debit' })),
         ].sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -6582,7 +6342,7 @@ export class BillingService {
         ]);
 
         combined = [
-          ...creditDonations.map((d) => ({ ...d, typeTransaction: 'donation', type: 'credit' })),
+          ...creditDonations.map((d) => ({ ...this.asReceiverView(d), typeTransaction: 'donation', type: 'credit' })),
           ...debitDonations.map((d) => ({ ...d, typeTransaction: 'donation', type: 'debit' })),
         ].sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -7077,11 +6837,11 @@ export class BillingService {
     ]);
 
     const combined = [
-      ...followingPaymentsCredit.map((p) => ({ ...p, typeTransaction: 'payFollowing', type: 'credit' })),
+      ...followingPaymentsCredit.map((p) => ({ ...this.asReceiverView(p), typeTransaction: 'payFollowing', type: 'credit' })),
       ...followingPaymentsDebit.map((p) => ({ ...p, typeTransaction: 'payFollowing', type: 'debit' })),
-      ...tipPaymentsCredit.map((p) => ({ ...p, typeTransaction: 'tip', type: 'credit' })),
+      ...tipPaymentsCredit.map((p) => ({ ...this.asReceiverView(p), typeTransaction: 'tip', type: 'credit' })),
       ...tipPaymentsDebit.map((p) => ({ ...p, typeTransaction: 'tip', type: 'debit' })),
-      ...donationsCredit.map((d) => ({ ...d, typeTransaction: 'donation', type: 'credit' })),
+      ...donationsCredit.map((d) => ({ ...this.asReceiverView(d), typeTransaction: 'donation', type: 'credit' })),
       ...donationsDebit.map((d) => ({ ...d, typeTransaction: 'donation', type: 'debit' })),
       ...usdtTransfersCredit.map((t) => ({ ...t, typeTransaction: 'usdt', type: 'credit' })),
       ...usdtTransfersDebit.map((t) => ({ ...t, typeTransaction: 'usdt', type: 'debit' })),
