@@ -29,4 +29,9 @@ export interface WalletCreditParams {
     refType: WalletLedgerRefType;
     refId: string;
     note?: string;
+    /** Original amount/currency before Stripe FX conversion (omit when not converted). */
+    originalAmountMinor?: number;
+    originalCurrency?: string;
+    fxRate?: number;
+    fxQuoteId?: string | null;
 }

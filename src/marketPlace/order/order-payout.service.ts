@@ -175,6 +175,15 @@ export class OrderPayoutService {
             return { released: false, reason: 'Missing seller amount', orderId };
         }
 
+        // Seller credit still waiting for Stripe FX conversion: release on a later run, never with a guessed amount.
+        const deferredCredit = await this.prisma.pendingWalletCredit.findFirst({
+            where: { refType: 'ORDER', refId: order.id, status: 'PENDING' },
+            select: { id: true },
+        });
+        if (deferredCredit) {
+            return { released: false, reason: 'Seller credit is waiting for currency conversion', orderId };
+        }
+
         const seller = await this.prisma.user.findUnique({
             where: { id: order.sellerId },
             select: { paymentProvider: true, country: true },
