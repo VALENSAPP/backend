@@ -35,6 +35,7 @@ import { RewardsModule } from './rewards/rewards.module';
 import { ModerationModule } from './moderation/moderation.module';
 import { TranslationModule } from './translation/translation.module';
 import { CurrencyModule } from './common/currency/currency.module';
+import { ProServicesModule } from './pro-services/pro-services.module';
 
 import * as path from 'path';
 import {
@@ -101,6 +102,7 @@ import {
     ModerationModule,
     TranslationModule,
     CurrencyModule,
+    ProServicesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

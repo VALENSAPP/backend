@@ -177,6 +177,22 @@ model User {
   userAddrees                 UserAddrees[]
   sellerWallets               SellerWallet[]
   walletLedgerEntries         WalletLedgerEntry[]
+  // Valens Services (pro-services)
+  serviceProvider             ServiceProvider?
+  proServices                 ProService[]               @relation("ProServiceProvider")
+  serviceBookingsAsBuyer      ServiceBooking[]           @relation("ServiceBookingBuyer")
+  serviceBookingsAsProvider   ServiceBooking[]           @relation("ServiceBookingProvider")
+  serviceSessionsAsProvider   ServiceSession[]           @relation("ServiceSessionProvider")
+  sessionParticipations       SessionParticipant[]
+  packageSubscriptions        PackageSubscription[]      @relation("PackageSubscriber")
+  packageSubscribers          PackageSubscription[]      @relation("PackageProvider")
+  ticketOrdersAsBuyer         TicketOrder[]              @relation("TicketOrderBuyer")
+  ticketOrdersAsProvider      TicketOrder[]              @relation("TicketOrderProvider")
+  eventTickets                EventTicket[]              @relation("EventTicketHolder")
+  serviceReviewsWritten       ServiceReview[]            @relation("ServiceReviewer")
+  serviceReviewsReceived      ServiceReview[]            @relation("ServiceReviewProvider")
+  serviceFavorites            ServiceFavorite[]
+  calendarFeedToken           CalendarFeedToken?
   sentPlatformPointTransfers     PlatformPointTransfer[] @relation("SentPlatformPointTransfers")
   receivedPlatformPointTransfers PlatformPointTransfer[] @relation("ReceivedPlatformPointTransfers")
   shopRewardPointsAwards         ShopRewardPointsAward[] @relation("UserShopRewardPointsAwards")
@@ -2732,4 +2748,567 @@ model UserMute {
   @@map("userMutes")
 }
 
+// =====================================================================
+// VALENS SERVICES (pro-services module)
+// Mentorships, Consultations, Appointments, Events, Monthly Packages.
+// All money values are minor units (cents / centavos).
+// =====================================================================
 
+enum ProServiceType {
+  MENTORSHIP
+  CONSULTATION
+  APPOINTMENT
+  EVENT
+  MONTHLY_PACKAGE
+}
+
+enum ProServiceStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+  /// Disabled by the system (e.g. provider membership lapsed)
+  DISABLED
+}
+
+enum ProServiceFormat {
+  ONLINE
+  IN_PERSON
+}
+
+enum MentorshipProgramType {
+  ONE_SESSION
+  SHORT_PROGRAM
+  LONG_PROGRAM
+}
+
+enum MentorshipMode {
+  ONE_ON_ONE
+  GROUP
+}
+
+enum SessionFrequency {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  CUSTOM
+}
+
+enum ServiceAttachmentKind {
+  PDF
+  VIDEO
+  IMAGE
+  OTHER
+}
+
+enum ServiceBookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  EXPIRED
+  REFUNDED
+}
+
+enum ServicePaymentMethod {
+  CARD
+  WALLET
+  FREE
+}
+
+enum ServiceSessionStatus {
+  SCHEDULED
+  LIVE
+  COMPLETED
+  MISSED_CLIENT
+  MISSED_PROVIDER
+  CANCELLED
+}
+
+enum SessionExtensionStatus {
+  REQUESTED
+  APPROVED
+  DECLINED
+  PAID
+  EXPIRED
+}
+
+enum PackageSubscriptionStatus {
+  PENDING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum TicketOrderStatus {
+  PENDING_PAYMENT
+  PAID
+  EXPIRED
+  CANCELLED
+}
+
+enum EventTicketStatus {
+  VALID
+  CHECKED_IN
+  CANCELLED
+}
+
+/// A user who has activated Services (screen P3).
+model ServiceProvider {
+  id                    String    @id @default(uuid())
+  userId                String    @unique
+  headline              String?   @db.VarChar(160)
+  about                 String?   @db.Text
+  /// IANA time zone, e.g. "America/New_York"
+  timezone              String    @default("UTC")
+  isActive              Boolean   @default(true)
+  ratingAvg             Float     @default(0)
+  reviewCount           Int       @default(0)
+  clientCount           Int       @default(0)
+  /// Set when membership lapses; services are disabled after this date.
+  membershipGraceEndsAt DateTime?
+  servicesDisabledAt    DateTime?
+  activatedAt           DateTime  @default(now())
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("serviceProviders")
+}
+
+/// One sellable service (all 5 types share this row).
+model ProService {
+  id                   String                  @id @default(uuid())
+  providerUserId       String
+  type                 ProServiceType
+  status               ProServiceStatus        @default(DRAFT)
+  title                String                  @db.VarChar(120)
+  description          String?                 @db.Text
+  includedItems        String[]                @default([])
+  /// Appointment: Beauty, Hair, Nails, Makeup, Wellness, Custom. Event: Birthday, Corporate, ...
+  category             String?                 @db.VarChar(60)
+  coverImage           String?
+  format               ProServiceFormat        @default(ONLINE)
+  /// Length of one session in minutes (not used by events)
+  durationMinutes      Int?
+  /// Price per session (mentorship / consultation / appointment) or per month (package). Events use ticket types.
+  priceMinor           Int                     @default(0)
+  currency             String                  @default("usd")
+  /// IANA time zone of the availability; defaults to the provider's
+  timezone             String?
+  /// In-person only; shown to the buyer after payment
+  address              String?
+  city                 String?
+  country              String?
+  contactPhone         String?
+  popularityScore      Int                     @default(0)
+  bookingCount         Int                     @default(0)
+  ratingAvg            Float                   @default(0)
+  reviewCount          Int                     @default(0)
+  publishedAt          DateTime?
+  archivedAt           DateTime?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  provider             User                    @relation("ProServiceProvider", fields: [providerUserId], references: [id], onDelete: Cascade)
+  mentorship           MentorshipDetail?
+  packageDetail        PackageDetail?
+  eventDetail          EventDetail?
+  cohorts              MentorshipCohort[]
+  ticketTypes          EventTicketType[]
+  attachments          ServiceAttachment[]
+  availabilityRules    AvailabilityRule[]
+  availabilityExceptions AvailabilityException[]
+  bookings             ServiceBooking[]
+  sessions             ServiceSession[]
+  packageSubscriptions PackageSubscription[]
+  ticketOrders         TicketOrder[]
+  tickets              EventTicket[]
+  reviews              ServiceReview[]
+  favorites            ServiceFavorite[]
+
+  @@index([providerUserId, status])
+  @@index([type, status])
+  @@index([status, popularityScore])
+  @@map("proServices")
+}
+
+model MentorshipDetail {
+  id                 String                @id @default(uuid())
+  serviceId          String                @unique
+  programType        MentorshipProgramType @default(ONE_SESSION)
+  programLengthWeeks Int?
+  sessionsCount      Int                   @default(1)
+  frequency          SessionFrequency?
+  mode               MentorshipMode        @default(ONE_ON_ONE)
+  maxParticipants    Int                   @default(1)
+  goals              String[]              @default([])
+  allowCustomStart   Boolean               @default(true)
+  service            ProService            @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@map("mentorshipDetails")
+}
+
+model MentorshipCohort {
+  id         String           @id @default(uuid())
+  serviceId  String
+  startAt    DateTime
+  seatsTotal Int
+  seatsTaken Int              @default(0)
+  isActive   Boolean          @default(true)
+  createdAt  DateTime         @default(now())
+  service    ProService       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  bookings   ServiceBooking[]
+
+  @@index([serviceId, startAt])
+  @@map("mentorshipCohorts")
+}
+
+model PackageDetail {
+  id                     String     @id @default(uuid())
+  serviceId              String     @unique
+  sessionsPerMonth       Int        @default(1)
+  maxSubscribers         Int        @default(25)
+  minNoticeHours         Int        @default(24)
+  cancelNoticeHours      Int        @default(12)
+  bufferMinutes          Int        @default(15)
+  autoHideUnavailable    Boolean    @default(true)
+  includesPrivateCircle  Boolean    @default(false)
+  stripeProductId        String?
+  stripePriceId          String?
+  service                ProService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@map("packageDetails")
+}
+
+model EventDetail {
+  id             String     @id @default(uuid())
+  serviceId      String     @unique
+  /// Nullable while the event is a draft; required to publish
+  startAt        DateTime?
+  endAt          DateTime?
+  venueName      String?
+  venueAddress   String?
+  /// Minimum age, shown only (not enforced)
+  ageRestriction Int?
+  dressCode      String?
+  salesStartAt   DateTime?
+  salesEndAt     DateTime?
+  service        ProService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([startAt])
+  @@map("eventDetails")
+}
+
+model EventTicketType {
+  id          String        @id @default(uuid())
+  serviceId   String
+  name        String        @db.VarChar(80)
+  description String?       @db.VarChar(300)
+  /// 0 = free ticket
+  priceMinor  Int           @default(0)
+  quantity    Int
+  soldCount   Int           @default(0)
+  sortOrder   Int           @default(0)
+  isActive    Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  service     ProService    @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  orders      TicketOrder[]
+  tickets     EventTicket[]
+
+  @@index([serviceId])
+  @@map("eventTicketTypes")
+}
+
+model ServiceAttachment {
+  id        String                @id @default(uuid())
+  serviceId String
+  kind      ServiceAttachmentKind
+  url       String
+  fileName  String?
+  mimeType  String?
+  sizeBytes Int?
+  createdAt DateTime              @default(now())
+  service   ProService            @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId])
+  @@map("serviceAttachments")
+}
+
+/// Weekly bookable window, in the service's time zone. Minutes from midnight.
+model AvailabilityRule {
+  id          String     @id @default(uuid())
+  serviceId   String
+  /// 0 = Sunday ... 6 = Saturday
+  dayOfWeek   Int
+  startMinute Int
+  endMinute   Int
+  createdAt   DateTime   @default(now())
+  service     ProService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, dayOfWeek])
+  @@map("availabilityRules")
+}
+
+/// A day off (whole day when start/end are null) or blocked hours on one date.
+model AvailabilityException {
+  id          String     @id @default(uuid())
+  serviceId   String
+  date        DateTime   @db.Date
+  startMinute Int?
+  endMinute   Int?
+  reason      String?
+  createdAt   DateTime   @default(now())
+  service     ProService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, date])
+  @@map("availabilityExceptions")
+}
+
+model ServiceBooking {
+  id                      String                @id @default(uuid())
+  serviceId               String
+  buyerId                 String
+  providerUserId          String
+  cohortId                String?
+  status                  ServiceBookingStatus  @default(PENDING_PAYMENT)
+  paymentMethod           ServicePaymentMethod?
+  /// STRIPE | PAGBANK (same resolver as the other modules)
+  paymentProvider         String?
+  currency                String                @default("usd")
+  unitPriceMinor          Int
+  /// Number of sessions bought
+  quantity                Int                   @default(1)
+  amountMinor             Int
+  feePercent              Float
+  feeMinor                Int
+  providerNetMinor        Int
+  refundedMinor           Int                   @default(0)
+  note                    String?               @db.VarChar(500)
+  /// SLOT | COHORT | CUSTOM_START
+  startOption             String?
+  requestedStartAt        DateTime?
+  holdExpiresAt           DateTime?
+  stripeCheckoutSessionId String?               @unique
+  stripePaymentIntentId   String?
+  confirmedAt             DateTime?
+  completedAt             DateTime?
+  cancelledAt             DateTime?
+  cancelReason            String?
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+  service                 ProService            @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  buyer                   User                  @relation("ServiceBookingBuyer", fields: [buyerId], references: [id], onDelete: Cascade)
+  provider                User                  @relation("ServiceBookingProvider", fields: [providerUserId], references: [id], onDelete: Cascade)
+  cohort                  MentorshipCohort?     @relation(fields: [cohortId], references: [id], onDelete: SetNull)
+  sessions                ServiceSession[]
+  review                  ServiceReview?
+
+  @@index([buyerId, status])
+  @@index([providerUserId, status])
+  @@index([serviceId])
+  @@index([status, holdExpiresAt])
+  @@map("serviceBookings")
+}
+
+model ServiceSession {
+  id                    String               @id @default(uuid())
+  serviceId             String
+  bookingId             String?
+  packageSubscriptionId String?
+  providerUserId        String
+  /// Client for 1:1 sessions; null for group / cohort sessions
+  clientUserId          String?
+  startAt               DateTime
+  endAt                 DateTime
+  status                ServiceSessionStatus @default(SCHEDULED)
+  roomName              String?              @unique
+  actualStartAt         DateTime?
+  actualEndAt           DateTime?
+  extraMinutes          Int                  @default(0)
+  reminderStartSentAt   DateTime?
+  reminder10SentAt      DateTime?
+  reminder2SentAt       DateTime?
+  cancelledById         String?
+  cancelledAt           DateTime?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  service               ProService           @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  booking               ServiceBooking?      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  packageSubscription   PackageSubscription? @relation(fields: [packageSubscriptionId], references: [id], onDelete: Cascade)
+  provider              User                 @relation("ServiceSessionProvider", fields: [providerUserId], references: [id], onDelete: Cascade)
+  participants          SessionParticipant[]
+  extensions            SessionExtension[]
+
+  @@index([providerUserId, startAt])
+  @@index([clientUserId, startAt])
+  @@index([status, startAt])
+  @@index([bookingId])
+  @@map("serviceSessions")
+}
+
+model SessionParticipant {
+  id           String         @id @default(uuid())
+  sessionId    String
+  userId       String
+  /// PROVIDER | CLIENT
+  role         String
+  joinedAt     DateTime?
+  leftAt       DateTime?
+  totalSeconds Int            @default(0)
+  session      ServiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId])
+  @@map("sessionParticipants")
+}
+
+model SessionExtension {
+  id                      String                 @id @default(uuid())
+  sessionId               String
+  requestedById           String
+  payerId                 String
+  minutes                 Int
+  priceMinor              Int
+  feeMinor                Int
+  currency                String                 @default("usd")
+  status                  SessionExtensionStatus @default(REQUESTED)
+  paymentMethod           ServicePaymentMethod?
+  stripeCheckoutSessionId String?                @unique
+  respondedAt             DateTime?
+  paidAt                  DateTime?
+  createdAt               DateTime               @default(now())
+  session                 ServiceSession         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("sessionExtensions")
+}
+
+model PackageSubscription {
+  id                   String                    @id @default(uuid())
+  serviceId            String
+  subscriberId         String
+  providerUserId       String
+  status               PackageSubscriptionStatus @default(PENDING)
+  stripeSubscriptionId String?                   @unique
+  currency             String                    @default("usd")
+  priceMinor           Int
+  feePercent           Float
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  sessionsAllowance    Int                       @default(0)
+  sessionsUsed         Int                       @default(0)
+  cancelAtPeriodEnd    Boolean                   @default(false)
+  canceledAt           DateTime?
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  service              ProService                @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  subscriber           User                      @relation("PackageSubscriber", fields: [subscriberId], references: [id], onDelete: Cascade)
+  provider             User                      @relation("PackageProvider", fields: [providerUserId], references: [id], onDelete: Cascade)
+  sessions             ServiceSession[]
+
+  @@index([serviceId, status])
+  @@index([subscriberId, status])
+  @@map("packageSubscriptions")
+}
+
+model TicketOrder {
+  id                      String               @id @default(uuid())
+  serviceId               String
+  ticketTypeId            String
+  buyerId                 String
+  providerUserId          String
+  quantity                Int
+  unitPriceMinor          Int
+  amountMinor             Int
+  feePercent              Float
+  feeMinor                Int
+  providerNetMinor        Int
+  currency                String               @default("usd")
+  status                  TicketOrderStatus    @default(PENDING_PAYMENT)
+  paymentMethod           ServicePaymentMethod?
+  paymentProvider         String?
+  stripeCheckoutSessionId String?              @unique
+  holdExpiresAt           DateTime?
+  paidAt                  DateTime?
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
+  service                 ProService           @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  ticketType              EventTicketType      @relation(fields: [ticketTypeId], references: [id], onDelete: Cascade)
+  buyer                   User                 @relation("TicketOrderBuyer", fields: [buyerId], references: [id], onDelete: Cascade)
+  provider                User                 @relation("TicketOrderProvider", fields: [providerUserId], references: [id], onDelete: Cascade)
+  tickets                 EventTicket[]
+
+  @@index([serviceId, status])
+  @@index([buyerId])
+  @@index([status, holdExpiresAt])
+  @@map("ticketOrders")
+}
+
+model EventTicket {
+  id            String            @id @default(uuid())
+  orderId       String
+  serviceId     String
+  ticketTypeId  String
+  holderUserId  String
+  /// Shown on the ticket, e.g. VAL-238491
+  ticketNumber  String            @unique
+  /// Random secret signed into the QR code
+  qrSecret      String
+  status        EventTicketStatus @default(VALID)
+  checkedInAt   DateTime?
+  checkedInById String?
+  createdAt     DateTime          @default(now())
+  order         TicketOrder       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  service       ProService        @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  ticketType    EventTicketType   @relation(fields: [ticketTypeId], references: [id], onDelete: Cascade)
+  holder        User              @relation("EventTicketHolder", fields: [holderUserId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, status])
+  @@index([holderUserId])
+  @@map("eventTickets")
+}
+
+model ServiceReview {
+  id             String          @id @default(uuid())
+  serviceId      String
+  providerUserId String
+  reviewerId     String
+  bookingId      String?         @unique
+  rating         Int
+  comment        String?         @db.Text
+  createdAt      DateTime        @default(now())
+  service        ProService      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  booking        ServiceBooking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  reviewer       User            @relation("ServiceReviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+  provider       User            @relation("ServiceReviewProvider", fields: [providerUserId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, createdAt])
+  @@index([providerUserId])
+  @@map("serviceReviews")
+}
+
+model ServiceFavorite {
+  id        String     @id @default(uuid())
+  userId    String
+  serviceId String
+  createdAt DateTime   @default(now())
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  service   ProService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, serviceId])
+  @@map("serviceFavorites")
+}
+
+/// Secret token for the Google / iPhone calendar subscription feed.
+model CalendarFeedToken {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  token     String   @unique
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("calendarFeedTokens")
+}
