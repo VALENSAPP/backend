@@ -432,6 +432,68 @@ export class WalletService {
     }
 
     /**
+     * Services: pay for a purchase with available (withdrawable) earnings.
+     * Idempotent on (refType, refId, PURCHASE_DEBIT). Throws when the balance is too low.
+     */
+    async debitAvailableForPurchase(params: {
+        userId: string;
+        amountMinor: number;
+        currency?: string;
+        provider?: WalletProvider;
+        source: WalletCreditParams['source'];
+        refType: WalletCreditParams['refType'];
+        refId: string;
+        note?: string;
+    }, tx?: TxClient) {
+        const run = async (client: TxClient) => {
+            const amountMinor = Math.trunc(params.amountMinor);
+            if (amountMinor <= 0) {
+                throw new BadRequestException('amountMinor must be positive');
+            }
+
+            const currency = this.normalizeCurrency(params.currency);
+            const provider = this.normalizeProvider(params.provider);
+
+            const existing = await this.findExistingEntry(client, params.refType, params.refId, 'PURCHASE_DEBIT');
+            if (existing) {
+                return { skipped: true as const, entryId: existing.id, amountMinor: existing.amountMinor };
+            }
+
+            const wallet = await this.ensureWallet(client, params.userId, currency, provider);
+            // Conditional decrement: never goes below zero even with two payments at once
+            const updated = await client.sellerWallet.updateMany({
+                where: { id: wallet.id, availableBalance: { gte: amountMinor } },
+                data: { availableBalance: { decrement: amountMinor } },
+            });
+            if (updated.count === 0) {
+                throw new BadRequestException(
+                    `Insufficient wallet balance. Available: ${(wallet.availableBalance / 100).toFixed(2)}, needed: ${(amountMinor / 100).toFixed(2)}`,
+                );
+            }
+
+            const entry = await client.walletLedgerEntry.create({
+                data: {
+                    walletId: wallet.id,
+                    userId: params.userId,
+                    entryType: 'PURCHASE_DEBIT',
+                    source: params.source,
+                    amountMinor,
+                    currency,
+                    provider,
+                    refType: params.refType,
+                    refId: params.refId,
+                    note: params.note || 'Paid with wallet balance',
+                },
+            });
+
+            return { skipped: false as const, entryId: entry.id, amountMinor };
+        };
+
+        if (tx) return run(tx);
+        return this.prisma.$transaction((client) => run(client));
+    }
+
+    /**
      * Lock/spend available balance for a withdrawal request.
      * Idempotent on (WITHDRAWAL, refId, WITHDRAWAL).
      */

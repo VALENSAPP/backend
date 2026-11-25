@@ -12,6 +12,7 @@ import { WalletModule } from '../wallet/wallet.module';
 import { PagBankModule } from '../pagbank/pagbank.module';
 import { MailModule } from '../common/mail/mail.module';
 import { CurrencyModule } from '../common/currency/currency.module';
+import { ProServicesModule } from '../pro-services/pro-services.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { CurrencyModule } from '../common/currency/currency.module';
     PagBankModule,
     MailModule,
     CurrencyModule,
+    ProServicesModule,
   ],
   controllers: [BillingController, BillingWebhookController, WithdrawalPagesController],
   providers: [BillingService],

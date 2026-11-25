@@ -6,7 +6,8 @@ export type WalletLedgerEntryType =
     | 'PENDING_TO_AVAILABLE'
     | 'PENDING_REVERSAL'
     | 'WITHDRAWAL'
-    | 'WITHDRAWAL_REVERSAL';
+    | 'WITHDRAWAL_REVERSAL'
+    | 'PURCHASE_DEBIT';
 
 export type WalletLedgerSource =
     | 'MARKETPLACE'
@@ -16,9 +17,10 @@ export type WalletLedgerSource =
     | 'FOLLOWING'
     | 'FAN_SUBSCRIPTION'
     | 'MISSION_DONATION'
+    | 'SERVICES'
     | 'OTHER';
 
-export type WalletLedgerRefType = 'ORDER' | 'PAYMENT' | 'WITHDRAWAL';
+export type WalletLedgerRefType = 'ORDER' | 'PAYMENT' | 'WITHDRAWAL' | 'SERVICE_BOOKING' | 'SERVICE_SESSION' | 'SERVICE_REFUND';
 
 export interface WalletCreditParams {
     userId: string;

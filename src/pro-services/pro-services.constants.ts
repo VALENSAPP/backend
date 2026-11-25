@@ -35,16 +35,38 @@ export function getServiceFeePercent(type: ProServiceType): number {
 }
 
 /** Categories shown in the create wizards. "Custom" lets the provider type their own. */
-export const APPOINTMENT_CATEGORIES = ['Beauty', 'Hair', 'Nails', 'Makeup', 'Wellness', 'Custom'] as const;
+export const APPOINTMENT_CATEGORIES = [
+    'Beauty & Aesthetics',
+    'Hair & Styling',
+    'Nails',
+    'Makeup',
+    'Wellness',
+    'Custom Appointment',
+] as const;
 
 export const EVENT_CATEGORIES = [
-    'Birthday',
-    'Corporate',
-    'Nightclub',
-    'Concert',
-    'Workshop',
-    'Networking',
-    'Custom',
+    'Birthday Party',
+    'Bachelorette Party',
+    'Corporate Event',
+    'Theater / Show',
+    'Nightclub Entry',
+    'Concert / Festival',
+    'Workshop / Class',
+    'Other Event',
+] as const;
+
+/** Goal chips on the mentorship Program Details screen; "Other (Custom)" lets the user type their own. */
+export const MENTORSHIP_GOALS = [
+    'Business Growth',
+    'Leadership',
+    'Career Growth',
+    'Marketing',
+    'Sales',
+    'Finance',
+    'Startup',
+    'Personal Development',
+    'Mindset',
+    'Other (Custom)',
 ] as const;
 
 export const MENTORSHIP_SESSION_DURATIONS = [30, 60, 90] as const;

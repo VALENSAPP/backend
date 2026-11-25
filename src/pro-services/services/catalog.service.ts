@@ -17,6 +17,7 @@ import {
     EVENT_CATEGORIES,
     getServiceFeePercent,
     LIMITS,
+    MENTORSHIP_GOALS,
     MENTORSHIP_PROGRAM_LENGTHS,
     MENTORSHIP_SESSION_DURATIONS,
     PRO_SERVICES_S3_FOLDERS,
@@ -64,6 +65,7 @@ export class CatalogService {
             eventCategories: EVENT_CATEGORIES,
             mentorship: {
                 sessionDurations: MENTORSHIP_SESSION_DURATIONS,
+                goals: MENTORSHIP_GOALS,
                 programLengthsWeeks: MENTORSHIP_PROGRAM_LENGTHS,
                 programTypes: ['ONE_SESSION', 'SHORT_PROGRAM', 'LONG_PROGRAM'],
                 frequencies: ['WEEKLY', 'BIWEEKLY', 'MONTHLY', 'CUSTOM'],

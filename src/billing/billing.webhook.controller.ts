@@ -15,6 +15,7 @@ import { TokenPurchaseService } from '../token-purchase/token-purchase.service';
 import { MarketplaceBattleBoostService } from '../marketPlace/marketplace-battles/marketplace-battle-boost.service';
 import { MarketplaceWinnerPromotionService } from '../marketPlace/marketplace-battles/marketplace-winner-promotion.service';
 import { PaymentService } from '../marketPlace/payment/payment.service';
+import { BookingService as ServiceBookingService, SERVICE_BOOKING_STRIPE_TYPE } from '../pro-services/services/booking.service';
 
 @ApiExcludeController()
 @Controller('billing')
@@ -28,6 +29,7 @@ export class BillingWebhookController {
     private readonly marketPlacePaymentService: PaymentService,
     private readonly marketplaceBattleBoostService: MarketplaceBattleBoostService,
     private readonly marketplaceWinnerPromotionService: MarketplaceWinnerPromotionService,
+    private readonly serviceBookingService: ServiceBookingService,
   ) {
     this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
       apiVersion: '2024-06-20',
@@ -104,6 +106,8 @@ export class BillingWebhookController {
             const paymentIntent = await this.stripe.paymentIntents.retrieve(paymentIntentId);
             await this.marketplaceWinnerPromotionService.handleVerifiedPaymentSuccess(paymentIntent);
           }
+        } else if (session.metadata?.type === SERVICE_BOOKING_STRIPE_TYPE) {
+          await this.serviceBookingService.handleCheckoutCompleted(session);
         } else {
           await this.billingService.handleCheckoutSessionCompleted(session);
         }
@@ -176,6 +180,8 @@ export class BillingWebhookController {
         await this.marketplaceBattleBoostService.handleVerifiedPaymentSuccess(paymentIntent);
       } else if (type === 'marketplace_winner_promotion') {
         await this.marketplaceWinnerPromotionService.handleVerifiedPaymentSuccess(paymentIntent);
+      } else if (type === SERVICE_BOOKING_STRIPE_TYPE) {
+        await this.serviceBookingService.handlePaymentIntentSucceeded(paymentIntent);
       } else {
         // eslint-disable-next-line no-console
         // console.log('[Stripe Webhook] payment_intent.succeeded — no handler for this type, skipping');
@@ -233,6 +239,8 @@ export class BillingWebhookController {
         await this.marketplaceBattleBoostService.handleCheckoutExpired(session);
       } else if (session.metadata?.type === 'marketplace_winner_promotion') {
         await this.marketplaceWinnerPromotionService.handleCheckoutExpired(session);
+      } else if (session.metadata?.type === SERVICE_BOOKING_STRIPE_TYPE) {
+        await this.serviceBookingService.handleCheckoutExpired(session);
       }
     } catch (error) {
       this.logger.error(
