@@ -785,6 +785,10 @@ export class MyclosetService {
     const sortBy = query.sortBy ?? 'priority';
     const sortOrder = query.sortOrder ?? 'desc';
 
+    if (minPrice !== undefined && maxPrice !== undefined && minPrice > maxPrice) {
+      throw new BadRequestException('minPrice cannot be greater than maxPrice');
+    }
+
     const now = new Date();
 
     // 1. Fetch active battle boosts with pinOnTop enabled
@@ -890,7 +894,39 @@ export class MyclosetService {
       }
     }
 
+    // Promotion flags and the price shown to the user, used for filtering, sorting and the response
+    const getPromoPricing = (productId: string, basePrice: number) => {
+      const promo = promotionMap.get(productId);
+      const hasFreeShipping = Boolean(
+        promo && (promo.promoType === MarketplaceWinnerPromotionType.FREE_SHIPPING || promo.freeShipping),
+      );
+      const hasPercentageOff = Boolean(
+        promo &&
+          (promo.promoType === MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H ||
+            (promo.discountPercent && promo.discountPercent > 0)),
+      );
+      const discountPercent = promo?.discountPercent ?? (hasPercentageOff ? 10 : null);
+      const promoPrice =
+        promo?.promoPrice ??
+        (hasPercentageOff && discountPercent
+          ? Number((basePrice * (1 - discountPercent / 100)).toFixed(2))
+          : null);
+      return {
+        promo,
+        hasFreeShipping,
+        hasPercentageOff,
+        discountPercent,
+        promoPrice,
+        currentPrice: promoPrice ?? basePrice,
+      };
+    };
+
     // 3. Build product filters
+    // Every search word must match at least one field (so "vintage jacket" finds "Vintage Leather Jacket")
+    const searchWords = search
+      ? Array.from(new Set(search.split(/\s+/).filter(Boolean))).slice(0, 10)
+      : [];
+
     const where: Prisma.ClosetItemsWhereInput = {
       isActive: true,
       isDeleted: false,
@@ -899,38 +935,42 @@ export class MyclosetService {
         isDeleted: 0,
         deletedAt: null,
       },
-      ...(category ? { category: { equals: category, mode: 'insensitive' } } : {}),
+      // Logged-in users don't see their own products in explore
+      ...(viewerUserId ? { userId: { not: viewerUserId } } : {}),
+      ...(category ? { category: { startsWith: category, mode: 'insensitive' } } : {}),
       ...(condition ? { condition } : {}),
-      ...(minPrice !== undefined || maxPrice !== undefined
+      ...(searchWords.length
         ? {
-            price: {
-              ...(minPrice !== undefined ? { gte: minPrice } : {}),
-              ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
-            },
-          }
-        : {}),
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' } },
-              { category: { contains: search, mode: 'insensitive' } },
-              { brand: { contains: search, mode: 'insensitive' } },
-              { description: { contains: search, mode: 'insensitive' } },
-              {
-                closet: {
-                  OR: [
-                    { shopName: { contains: search, mode: 'insensitive' } },
-                    { shopUsername: { contains: search, mode: 'insensitive' } },
-                  ],
+            AND: searchWords.map((word): Prisma.ClosetItemsWhereInput => ({
+              OR: [
+                { name: { contains: word, mode: 'insensitive' } },
+                { category: { contains: word, mode: 'insensitive' } },
+                { brand: { contains: word, mode: 'insensitive' } },
+                { description: { contains: word, mode: 'insensitive' } },
+                {
+                  closet: {
+                    OR: [
+                      { shopName: { contains: word, mode: 'insensitive' } },
+                      { shopUsername: { contains: word, mode: 'insensitive' } },
+                    ],
+                  },
                 },
-              },
-            ],
+                {
+                  user: {
+                    OR: [
+                      { userName: { contains: word, mode: 'insensitive' } },
+                      { displayName: { contains: word, mode: 'insensitive' } },
+                    ],
+                  },
+                },
+              ],
+            })),
           }
         : {}),
     };
 
     // 4. Fetch candidate product IDs to rank
-    const candidateItems = await this.prisma.closetItems.findMany({
+    const candidateRows = await this.prisma.closetItems.findMany({
       where,
       select: {
         id: true,
@@ -938,8 +978,6 @@ export class MyclosetService {
         price: true,
       },
     });
-
-    const total = candidateItems.length;
 
     // Helper to calculate Priority Tier:
     // Tier 1: Pinned on top
@@ -950,53 +988,41 @@ export class MyclosetService {
       if (pinnedProductMap.has(productId)) {
         return 1;
       }
-      const promo = promotionMap.get(productId);
-      if (
-        promo &&
-        (promo.promoType === MarketplaceWinnerPromotionType.FREE_SHIPPING || promo.freeShipping)
-      ) {
+      const { hasFreeShipping, hasPercentageOff } = getPromoPricing(productId, 0);
+      if (hasFreeShipping) {
         return 2;
       }
-      if (
-        promo &&
-        (promo.promoType === MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H ||
-          (promo.discountPercent && promo.discountPercent > 0))
-      ) {
+      if (hasPercentageOff) {
         return 3;
       }
       return 4;
     };
 
-    // 5. Multi-level Priority Tier sorting
-    // Tier 1: Active Pinned -> ordered by boostedAt DESC (latest boosted first)
-    // Tier 2: Active Free Shipping -> ordered by promotedAt DESC (latest promoted first)
-    // Tier 3: Active Percentage Off -> ordered by promotedAt DESC (latest promoted first)
-    // Tier 4: Standard Products (including expired boosts/promotions) -> treated as normal posts
-    candidateItems.sort((a, b) => {
-      // Explicit global sort requests
-      if (sortBy === 'boostedAt') {
-        const boostedAtA = pinnedProductMap.get(a.id)?.boostedAt?.getTime() ?? 0;
-        const boostedAtB = pinnedProductMap.get(b.id)?.boostedAt?.getTime() ?? 0;
-        if (boostedAtA !== boostedAtB) {
-          return sortOrder === 'asc' ? boostedAtA - boostedAtB : boostedAtB - boostedAtA;
-        }
-      } else if (sortBy === 'promotedAt') {
-        const promotedAtA = promotionMap.get(a.id)?.promotedAt?.getTime() ?? 0;
-        const promotedAtB = promotionMap.get(b.id)?.promotedAt?.getTime() ?? 0;
-        if (promotedAtA !== promotedAtB) {
-          return sortOrder === 'asc' ? promotedAtA - promotedAtB : promotedAtB - promotedAtA;
-        }
-      }
+    // Price filters use the price the user actually sees (after any active discount)
+    const candidateItems = candidateRows
+      .map((row) => ({ ...row, currentPrice: getPromoPricing(row.id, row.price).currentPrice }))
+      .filter(
+        (row) =>
+          (minPrice === undefined || row.currentPrice >= minPrice) &&
+          (maxPrice === undefined || row.currentPrice <= maxPrice),
+      );
 
+    const total = candidateItems.length;
+
+    type Candidate = (typeof candidateItems)[number];
+    const direction = sortOrder === 'asc' ? 1 : -1;
+    const byId = (a: Candidate, b: Candidate) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+    // Default ranking: tier first, then latest boost/promotion, then newest
+    const byPriority = (a: Candidate, b: Candidate): number => {
       const rankA = getTier(a.id);
       const rankB = getTier(b.id);
 
-      // Higher priority tier comes first
+      // 1 (Pin) -> 2 (Free Shipping) -> 3 (Percentage Off) -> 4 (Standard/Expired)
       if (rankA !== rankB) {
-        return rankA - rankB; // 1 (Pin) -> 2 (Free Shipping) -> 3 (Percentage Off) -> 4 (Standard/Expired)
+        return rankA - rankB;
       }
 
-      // Tie-breakers within the same tier:
       if (rankA === 1) {
         // Tier 1: Which boosted last comes on top (boostedAt DESC)
         const boostedAtA = pinnedProductMap.get(a.id)?.boostedAt?.getTime() ?? 0;
@@ -1013,15 +1039,58 @@ export class MyclosetService {
         }
       }
 
-      // Tier 4 (Normal posts and expired boosts/promos):
-      if (sortBy === 'price') {
-        return sortOrder === 'asc' ? a.price - b.price : b.price - a.price;
+      // Tier 4 (and ties): createdAt in the requested order
+      const timeDiff = a.createdAt.getTime() - b.createdAt.getTime();
+      if (timeDiff !== 0) {
+        return timeDiff * direction;
       }
+      return byId(a, b);
+    };
 
-      // Default: newest post first (createdAt DESC)
-      const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
-      return sortOrder === 'asc' ? -timeDiff : timeDiff;
-    });
+    // Items that have the date come first (in the requested order); the rest follow in priority order
+    const byOptionalDate = (getDate: (id: string) => number | null) => (a: Candidate, b: Candidate) => {
+      const dateA = getDate(a.id);
+      const dateB = getDate(b.id);
+      if (dateA !== null && dateB !== null && dateA !== dateB) {
+        return (dateA - dateB) * direction;
+      }
+      if (dateA !== null && dateB === null) return -1;
+      if (dateA === null && dateB !== null) return 1;
+      return byPriority(a, b);
+    };
+
+    // 5. Sorting
+    // priority          -> tiered ranking (pinned, free shipping, percentage off, standard)
+    // price / createdAt -> the WHOLE list is sorted by that field, tiers are ignored
+    // boostedAt / promotedAt -> boosted/promoted items first by that date, everything else after
+    let comparator: (a: Candidate, b: Candidate) => number;
+    switch (sortBy) {
+      case 'price':
+        comparator = (a, b) => {
+          if (a.currentPrice !== b.currentPrice) {
+            return (a.currentPrice - b.currentPrice) * direction;
+          }
+          const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
+          return timeDiff !== 0 ? timeDiff : byId(a, b);
+        };
+        break;
+      case 'createdAt':
+        comparator = (a, b) => {
+          const timeDiff = a.createdAt.getTime() - b.createdAt.getTime();
+          return timeDiff !== 0 ? timeDiff * direction : byId(a, b);
+        };
+        break;
+      case 'boostedAt':
+        comparator = byOptionalDate((id) => pinnedProductMap.get(id)?.boostedAt?.getTime() ?? null);
+        break;
+      case 'promotedAt':
+        comparator = byOptionalDate((id) => promotionMap.get(id)?.promotedAt?.getTime() ?? null);
+        break;
+      default:
+        comparator = byPriority;
+    }
+
+    candidateItems.sort(comparator);
 
     // 6. Slice requested page IDs
     const pageIds = candidateItems.slice(skip, skip + limit).map((i) => i.id);
@@ -1071,16 +1140,14 @@ export class MyclosetService {
       .filter((p): p is NonNullable<typeof p> => Boolean(p))
       .map((item) => {
         const isPinned = pinnedProductMap.has(item.id);
-        const promo = promotionMap.get(item.id);
-        const hasFreeShipping = Boolean(
-          promo &&
-            (promo.promoType === MarketplaceWinnerPromotionType.FREE_SHIPPING || promo.freeShipping),
-        );
-        const hasPercentageOff = Boolean(
-          promo &&
-            (promo.promoType === MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H ||
-              (promo.discountPercent && promo.discountPercent > 0)),
-        );
+        const {
+          promo,
+          hasFreeShipping,
+          hasPercentageOff,
+          discountPercent,
+          promoPrice: calculatedPromoPrice,
+          currentPrice,
+        } = getPromoPricing(item.id, item.price);
 
         let priorityTier = 4;
         let primaryBadge: 'PINNED' | 'FREE_SHIPPING' | 'PERCENTAGE_OFF' | null = null;
@@ -1096,13 +1163,6 @@ export class MyclosetService {
           primaryBadge = 'PERCENTAGE_OFF';
         }
 
-        const discountPercent = promo?.discountPercent ?? (hasPercentageOff ? 10 : null);
-        const calculatedPromoPrice =
-          promo?.promoPrice ??
-          (hasPercentageOff && discountPercent
-            ? Number((item.price * (1 - discountPercent / 100)).toFixed(2))
-            : null);
-        const currentPrice = calculatedPromoPrice ?? item.price;
 
         const originalShippingFee = promo?.originalShippingFee ?? item.shippingFee ?? 0;
         const promoShippingFee = hasFreeShipping ? 0 : (promo?.promoShippingFee ?? item.shippingFee ?? 0);

@@ -147,15 +147,15 @@ export class MyclosetController {
   @ApiOperation({
     summary: 'Explore all marketplace products with prioritized ranking',
     description:
-      'Returns paginated products ordered by priority tier: 1) Pinned on Top (Battle Boost), 2) Free Shipping (Winner Promotion), 3) Percentage Off (Winner Discount), 4) Standard products.',
+      'Returns paginated products. Default sort (priority): 1) Pinned on Top (Battle Boost), 2) Free Shipping (Winner Promotion), 3) Percentage Off (Winner Discount), 4) Standard products. sortBy=price or createdAt sorts the whole list by that field. When logged in, the user\'s own products are excluded. Price filters and price sorting use the price shown to the user (after any active discount).',
   })
-  @ApiQuery({ name: 'search', required: false, example: 'vintage jacket' })
-  @ApiQuery({ name: 'category', required: false, example: 'Fashion' })
-  @ApiQuery({ name: 'condition', required: false, enum: ClosetItemCondition })
-  @ApiQuery({ name: 'minPrice', required: false, example: 10 })
-  @ApiQuery({ name: 'maxPrice', required: false, example: 500 })
-  @ApiQuery({ name: 'sortBy', required: false, enum: ['priority', 'createdAt', 'price', 'boostedAt', 'promotedAt'] })
-  @ApiQuery({ name: 'sortOrder', required: false, enum: ['asc', 'desc'] })
+  @ApiQuery({ name: 'search', required: false, example: 'vintage jacket', description: 'Every word must match name, brand, category, description, shop name/username or seller username/display name' })
+  @ApiQuery({ name: 'category', required: false, example: 'Fashion', description: 'Case-insensitive; matches categories starting with this text' })
+  @ApiQuery({ name: 'condition', required: false, enum: ClosetItemCondition, description: 'Case-insensitive; spaces or underscores allowed' })
+  @ApiQuery({ name: 'minPrice', required: false, example: 10, description: 'Applied to the price after any active discount' })
+  @ApiQuery({ name: 'maxPrice', required: false, example: 500, description: 'Applied to the price after any active discount; must be >= minPrice' })
+  @ApiQuery({ name: 'sortBy', required: false, enum: ['priority', 'createdAt', 'price', 'boostedAt', 'promotedAt'], description: 'price / createdAt sort the whole list; priority keeps promoted tiers on top' })
+  @ApiQuery({ name: 'sortOrder', required: false, enum: ['asc', 'desc'], description: 'Case-insensitive' })
   @ApiQuery({ name: 'page', required: false, example: 1 })
   @ApiQuery({ name: 'limit', required: false, example: 20 })
   async explorePriorityProducts(
