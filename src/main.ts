@@ -191,7 +191,7 @@ async function bootstrap() {
     }
 
     // Handle sendMessage via socket
-    socket.on('sendMessage', async (data: any) => {
+    socket.on('sendMessage', async (data: any, ack?: (response: any) => void) => {
       try {
         if (typeof data === 'string') {
           data = JSON.parse(data);
@@ -216,18 +216,30 @@ async function bootstrap() {
           return;
         }
 
-        const createdConversation = await postService.sendMessage(
+        const { conversation, isDuplicate } = await postService.sendMessageWithMeta(
           senderId,
           receiverId,
           String(message).trim(),
         );
 
-        socket.emit('messageSent', createdConversation);
+        // If the client passed an ack callback, reply through it (one reply per request)
+        if (typeof ack === 'function') {
+          ack({ success: true, isDuplicate, data: conversation });
+        }
+
+        // A duplicate request was already confirmed to the sender by the first request,
+        // so don't send 'messageSent' again (that made the message appear twice on screen)
+        if (!isDuplicate) {
+          socket.emit('messageSent', conversation);
+        }
       } catch (error: any) {
         console.error('sendMessage socket error:', error);
         socket.emit('sendMessageError', {
           message: error?.message || 'Failed to send message',
         });
+        if (typeof ack === 'function') {
+          ack({ success: false, message: error?.message || 'Failed to send message' });
+        }
       }
     });
 

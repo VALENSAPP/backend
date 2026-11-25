@@ -4739,6 +4739,24 @@ export class PostService {
 
   // Chat functionality using unified Conversation table
   async sendMessage(senderId: string, receiverId: string, message: string) {
+    const { conversation } = await this.sendMessageWithMeta(senderId, receiverId, message);
+    return conversation;
+  }
+
+  /**
+   * Sends a chat message and reports whether it was newly created or a duplicate.
+   *
+   * The duplicate check, ChatBox lookup/creation and message insert all run inside one
+   * transaction that holds a PostgreSQL advisory lock for this pair of users. Concurrent
+   * requests for the same pair are therefore processed one at a time, so two identical
+   * requests arriving together can no longer both pass the duplicate check and both insert.
+   * Duplicates do not trigger a notification or a 'newMessage' socket event.
+   */
+  async sendMessageWithMeta(
+    senderId: string,
+    receiverId: string,
+    message: string,
+  ): Promise<{ conversation: any; isDuplicate: boolean; chatBoxId: string | null }> {
     if (!senderId) throw new BadRequestException('Sender ID required');
     if (!receiverId) throw new BadRequestException('Receiver ID required');
     if (!message || message.trim() === '') throw new BadRequestException('Message required');
@@ -4750,43 +4768,19 @@ export class PostService {
 
     const trimmedContent = message.trim();
 
-    // Idempotency check: prevent duplicate message if exact same content was sent within last 3 seconds
-    const recentDuplicate = await this.prisma.conversation.findFirst({
-      where: {
-        type: 'CHAT',
-        senderId,
-        receiverId,
-        content: trimmedContent,
-        createdAt: { gte: new Date(Date.now() - 3000) },
+    const userSelect = {
+      select: {
+        id: true,
+        userName: true,
+        displayName: true,
+        image: true,
       },
-      include: {
-        sender: {
-          select: {
-            id: true,
-            userName: true,
-            displayName: true,
-            image: true,
-          },
-        },
-        receiver: {
-          select: {
-            id: true,
-            userName: true,
-            displayName: true,
-            image: true,
-          },
-        },
-      },
-    });
-
-    if (recentDuplicate) {
-      return recentDuplicate;
-    }
+    };
 
     // Verify both users exist before creating ChatBox
     const [sender, receiver] = await Promise.all([
-      this.prisma.user.findUnique({ where: { id: senderId } }),
-      this.prisma.user.findUnique({ where: { id: receiverId } }),
+      this.prisma.user.findUnique({ where: { id: senderId }, select: { id: true } }),
+      this.prisma.user.findUnique({ where: { id: receiverId }, select: { id: true } }),
     ]);
 
     if (!sender) {
@@ -4796,71 +4790,101 @@ export class PostService {
       throw new BadRequestException('Receiver user not found');
     }
 
-    // Find existing ChatBox between sender and receiver (bidirectional)
-    let chatBox = await this.prisma.chatBox.findFirst({
-      where: {
-        OR: [
-          { senderId, receiverId },
-          { senderId: receiverId, receiverId: senderId },
-        ],
-      },
-    });
+    // Same key for A->B and B->A so ChatBox creation for the pair is serialized too
+    const pairLockKey = `chat:${[senderId, receiverId].sort().join(':')}`;
 
-    // If no ChatBox exists, create one
-    if (!chatBox) {
-      chatBox = await this.prisma.chatBox.create({
-        data: {
-          senderId,
-          receiverId,
-        },
-      });
-    } else if (chatBox.hiddenBy && chatBox.hiddenBy.length > 0) {
-      const updatedHiddenBy = chatBox.hiddenBy.filter(id => id !== senderId && id !== receiverId);
-      if (updatedHiddenBy.length !== chatBox.hiddenBy.length) {
-        await this.prisma.chatBox.update({
-          where: { id: chatBox.id },
-          data: { hiddenBy: updatedHiddenBy },
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        // Held until this transaction commits or rolls back
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${pairLockKey}))`;
+
+        // Idempotency check: same content from the same sender within the last 3 seconds
+        const recentDuplicate = await tx.conversation.findFirst({
+          where: {
+            type: 'CHAT',
+            senderId,
+            receiverId,
+            content: trimmedContent,
+            createdAt: { gte: new Date(Date.now() - 3000) },
+          },
+          orderBy: { createdAt: 'desc' },
+          include: {
+            sender: userSelect,
+            receiver: userSelect,
+          },
         });
-        chatBox.hiddenBy = updatedHiddenBy;
-      }
+
+        if (recentDuplicate) {
+          return {
+            conversation: recentDuplicate,
+            isDuplicate: true,
+            chatBoxId: recentDuplicate.chatId ?? null,
+          };
+        }
+
+        // Find existing ChatBox between sender and receiver (bidirectional)
+        let chatBox = await tx.chatBox.findFirst({
+          where: {
+            OR: [
+              { senderId, receiverId },
+              { senderId: receiverId, receiverId: senderId },
+            ],
+          },
+        });
+
+        // If no ChatBox exists, create one
+        if (!chatBox) {
+          chatBox = await tx.chatBox.create({
+            data: {
+              senderId,
+              receiverId,
+            },
+          });
+        } else if (chatBox.hiddenBy && chatBox.hiddenBy.length > 0) {
+          const updatedHiddenBy = chatBox.hiddenBy.filter(id => id !== senderId && id !== receiverId);
+          if (updatedHiddenBy.length !== chatBox.hiddenBy.length) {
+            await tx.chatBox.update({
+              where: { id: chatBox.id },
+              data: { hiddenBy: updatedHiddenBy },
+            });
+            chatBox.hiddenBy = updatedHiddenBy;
+          }
+        }
+
+        const conversation = await tx.conversation.create({
+          data: {
+            type: 'CHAT',
+            senderId,
+            receiverId,
+            content: trimmedContent,
+            chatId: chatBox.id,
+          },
+          include: {
+            sender: userSelect,
+            receiver: userSelect,
+          },
+        });
+
+        return { conversation, isDuplicate: false, chatBoxId: chatBox.id };
+      },
+      { maxWait: 5000, timeout: 10000 },
+    );
+
+    if (result.isDuplicate) {
+      // Already saved, notified and delivered by the first request
+      return result;
     }
 
-    const conversation = await this.prisma.conversation.create({
-      data: {
-        type: 'CHAT',
-        senderId,
-        receiverId,
-        content: trimmedContent,
-        chatId: chatBox.id,
-      },
-      include: {
-        sender: {
-          select: {
-            id: true,
-            userName: true,
-            displayName: true,
-            image: true,
-          },
-        },
-        receiver: {
-          select: {
-            id: true,
-            userName: true,
-            displayName: true,
-            image: true,
-          },
-        },
-      },
-    });
+    const { conversation, chatBoxId } = result;
 
-    // Send push and in-app notification to receiver (e.g., Akash)
+    // Send push and in-app notification to receiver (after the transaction has committed)
     try {
       await this.notificationService.sendChatMessageNotification(
         senderId,
         receiverId,
         trimmedContent,
         conversation.id,
-        chatBox.id,
+        chatBoxId as string,
       );
     } catch (notificationError) {
       console.error('Failed to send chat message notification:', notificationError);
@@ -4874,7 +4898,7 @@ export class PostService {
       }
     }
 
-    return conversation;
+    return result;
   }
 
   private async getSubscriptionRenewalDetailsForConversations(
