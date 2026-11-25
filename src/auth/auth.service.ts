@@ -135,6 +135,12 @@ export class AuthService {
     });
   }
 
+  /**
+   * Called on login / social sign-in. Accounts are NOT added to a device here any more
+   * (use POST /auth/device-accounts/add). This only refreshes an account that is already
+   * on the device (last login time, push token, platform, language). It never creates a row
+   * and never brings back an account that was removed from the device.
+   */
   private async upsertDeviceAccount(
     userId: string,
     deviceId?: string,
@@ -143,44 +149,122 @@ export class AuthService {
     if (!deviceId) return;
 
     const existing = await this.prisma.deviceAccount.findFirst({
-      where: { userId, deviceId },
+      where: { userId, deviceId, removedAt: null },
     });
+    if (!existing) return;
 
     const fcmToken = meta?.fcmToken?.trim();
     const platform = meta?.platform || meta?.deviceType;
     const language = meta?.language ? normalizeLanguage(meta.language) : undefined;
 
-    if (existing) {
+    await this.prisma.deviceAccount.update({
+      where: { id: existing.id },
+      data: {
+        lastLoginAt: new Date(),
+        isActive: true,
+        ...(fcmToken ? { fcmToken } : {}),
+        ...(platform ? { platform } : {}),
+        ...(language ? { language } : {}),
+      },
+    });
+  }
+
+  /**
+   * POST /auth/device-accounts/add
+   * Adds the logged-in user to the given device. Safe to call more than once: an account that
+   * is already on the device is not added again. Does not send any notification.
+   */
+  async addDeviceAccount(
+    userId: string,
+    deviceId: string,
+    meta?: { fcmToken?: string; platform?: string; language?: string },
+  ) {
+    if (!userId?.trim()) throw new UnauthorizedException('Invalid user');
+    const trimmedDeviceId = deviceId?.trim();
+    if (!trimmedDeviceId) throw new BadRequestException('Device id is required');
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, isDeleted: true },
+    });
+    if (!user || user.isDeleted === 1) {
+      throw new UnauthorizedException('Invalid user');
+    }
+
+    const fcmToken = meta?.fcmToken?.trim() || undefined;
+    const platform = meta?.platform?.trim() || undefined;
+    const language = meta?.language ? normalizeLanguage(meta.language) : undefined;
+
+    const existing = await this.prisma.deviceAccount.findFirst({
+      where: { userId, deviceId: trimmedDeviceId },
+    });
+
+    let alreadyAdded = false;
+
+    if (existing && !existing.removedAt) {
+      // Already on this device: don't add again, just keep its details current
+      alreadyAdded = true;
       await this.prisma.deviceAccount.update({
         where: { id: existing.id },
         data: {
-          lastLoginAt: new Date(),
-          removedAt: null,
           isActive: true,
           ...(fcmToken ? { fcmToken } : {}),
           ...(platform ? { platform } : {}),
           ...(language ? { language } : {}),
         },
       });
-      return;
+    } else {
+      const activeCount = await this.prisma.deviceAccount.count({
+        where: { deviceId: trimmedDeviceId, removedAt: null },
+      });
+
+      if (existing) {
+        // Was removed from this device earlier: add it back (same row, never a second one)
+        await this.prisma.deviceAccount.update({
+          where: { id: existing.id },
+          data: {
+            removedAt: null,
+            isActive: true,
+            isPrimary: activeCount === 0,
+            addedAt: new Date(),
+            lastLoginAt: new Date(),
+            fcmToken: fcmToken ?? null,
+            ...(platform ? { platform } : {}),
+            ...(language ? { language } : {}),
+          },
+        });
+      } else {
+        try {
+          await this.prisma.deviceAccount.create({
+            data: {
+              userId,
+              deviceId: trimmedDeviceId,
+              isPrimary: activeCount === 0,
+              isActive: true,
+              lastLoginAt: new Date(),
+              fcmToken: fcmToken ?? null,
+              platform: platform ?? null,
+              language: language ?? 'en',
+            },
+          });
+        } catch (error: any) {
+          // Two add requests at the same moment: the unique (deviceId, userId) constraint
+          // stops the second row, so treat it as already added
+          if (error?.code === 'P2002') {
+            alreadyAdded = true;
+          } else {
+            throw error;
+          }
+        }
+      }
     }
 
-    const activeCount = await this.prisma.deviceAccount.count({
-      where: { deviceId, removedAt: null },
-    });
-
-    await this.prisma.deviceAccount.create({
-      data: {
-        userId,
-        deviceId,
-        isPrimary: activeCount === 0,
-        isActive: true,
-        lastLoginAt: new Date(),
-        fcmToken: fcmToken || null,
-        platform: platform || null,
-        language: language || 'en',
-      },
-    });
+    const list = await this.listDeviceAccounts(userId, trimmedDeviceId);
+    return {
+      message: alreadyAdded ? 'Account is already added on this device' : 'Account added to this device',
+      alreadyAdded,
+      ...list,
+    };
   }
 
   private async issueTokensForUser(user: any, meta?: any) {

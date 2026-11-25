@@ -277,6 +277,11 @@ export class UserService {
     };
   }
 
+  /**
+   * Called on register / social sign-in. Accounts are NOT added to a device here any more
+   * (use POST /auth/device-accounts/add). This only refreshes an account that is already on
+   * the device. It never creates a row and never brings back a removed account.
+   */
   private async upsertDeviceAccount(
     userId: string,
     deviceId?: string,
@@ -285,38 +290,18 @@ export class UserService {
     if (!deviceId) return;
 
     const existing = await this.prisma.deviceAccount.findFirst({
-      where: { userId, deviceId },
+      where: { userId, deviceId, removedAt: null },
     });
+    if (!existing) return;
 
-    if (existing) {
-      await this.prisma.deviceAccount.update({
-        where: { id: existing.id },
-        data: {
-          lastLoginAt: new Date(),
-          removedAt: null,
-          isActive: true,
-          ...(extra?.fcmToken ? { fcmToken: extra.fcmToken } : {}),
-          ...(extra?.platform ? { platform: extra.platform } : {}),
-          ...(extra?.language ? { language: normalizeLanguage(extra.language) } : {}),
-        },
-      });
-      return;
-    }
-
-    const activeCount = await this.prisma.deviceAccount.count({
-      where: { deviceId, removedAt: null },
-    });
-
-    await this.prisma.deviceAccount.create({
+    await this.prisma.deviceAccount.update({
+      where: { id: existing.id },
       data: {
-        userId,
-        deviceId,
-        isPrimary: activeCount === 0,
-        isActive: true,
         lastLoginAt: new Date(),
-        fcmToken: extra?.fcmToken,
-        platform: extra?.platform,
-        language: extra?.language ? normalizeLanguage(extra.language) : 'en',
+        isActive: true,
+        ...(extra?.fcmToken ? { fcmToken: extra.fcmToken } : {}),
+        ...(extra?.platform ? { platform: extra.platform } : {}),
+        ...(extra?.language ? { language: normalizeLanguage(extra.language) } : {}),
       },
     });
   }
@@ -4735,8 +4720,9 @@ export class UserService {
 
     if (meta?.deviceId?.trim()) {
       const deviceId = meta.deviceId.trim();
+      // Only updates an account already on this device; adding is done by POST /auth/device-accounts/add
       const existing = await this.prisma.deviceAccount.findFirst({
-        where: { userId, deviceId },
+        where: { userId, deviceId, removedAt: null },
       });
 
       if (existing) {
@@ -4747,23 +4733,6 @@ export class UserService {
             platform: meta.platform || existing.platform,
             language: meta.language ? normalizeLanguage(meta.language) : existing.language,
             isActive: true,
-            removedAt: null,
-            lastLoginAt: new Date(),
-          },
-        });
-      } else {
-        const activeCount = await this.prisma.deviceAccount.count({
-          where: { deviceId, removedAt: null },
-        });
-        await this.prisma.deviceAccount.create({
-          data: {
-            userId,
-            deviceId,
-            fcmToken: trimmedToken,
-            platform: meta.platform,
-            language: meta.language ? normalizeLanguage(meta.language) : 'en',
-            isActive: true,
-            isPrimary: activeCount === 0,
             lastLoginAt: new Date(),
           },
         });
@@ -4794,31 +4763,15 @@ export class UserService {
 
     if (deviceId?.trim()) {
       const trimmedDeviceId = deviceId.trim();
+      // Only updates an account already on this device; adding is done by POST /auth/device-accounts/add
       const existing = await this.prisma.deviceAccount.findFirst({
-        where: { userId, deviceId: trimmedDeviceId },
+        where: { userId, deviceId: trimmedDeviceId, removedAt: null },
       });
-      console.log("test12121212", deviceId);
       if (existing) {
         await this.prisma.deviceAccount.update({
           where: { id: existing.id },
           data: {
             language: normalized,
-            isActive: true,
-            removedAt: null,
-          },
-        });
-      } else {
-        const activeCount = await this.prisma.deviceAccount.count({
-          where: { deviceId: trimmedDeviceId, removedAt: null },
-        });
-        await this.prisma.deviceAccount.create({
-          data: {
-            userId,
-            deviceId: trimmedDeviceId,
-            language: normalized,
-            isActive: true,
-            isPrimary: activeCount === 0,
-            lastLoginAt: new Date(),
           },
         });
       }

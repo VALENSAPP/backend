@@ -35,6 +35,28 @@ export class DeviceAccountsDto {
   deviceId: string;
 }
 
+export class AddDeviceAccountDto {
+  @ApiProperty({ required: true, description: 'Device identifier from client' })
+  @IsString()
+  @IsNotEmpty()
+  deviceId: string;
+
+  @ApiProperty({ required: false, description: 'Push token of this device' })
+  @IsOptional()
+  @IsString()
+  fcmToken?: string;
+
+  @ApiProperty({ required: false, description: 'Device platform, e.g. ios or android' })
+  @IsOptional()
+  @IsString()
+  platform?: string;
+
+  @ApiProperty({ required: false, description: 'App language on this device' })
+  @IsOptional()
+  @IsString()
+  language?: string;
+}
+
 export class SwitchAccountDto {
   @ApiProperty({ required: true, description: 'Device identifier from client' })
   @IsString()
@@ -284,6 +306,23 @@ export class AuthController {
   async listDeviceAccounts(@Request() req: any, @Body() body: DeviceAccountsDto) {
     const userId = req.user.userId;
     return this.authService.listDeviceAccounts(userId, body.deviceId);
+  }
+
+  @Post('device-accounts/add')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Add the logged-in account to this device',
+    description:
+      'Login and register no longer add the account to the device. Call this after login/register with the new access token. If the account is already on the device it is not added again (alreadyAdded: true). No notification is sent. Returns the accounts on this device.',
+  })
+  async addDeviceAccount(@Request() req: any, @Body() body: AddDeviceAccountDto) {
+    const userId = req.user.userId;
+    return this.authService.addDeviceAccount(userId, body.deviceId, {
+      fcmToken: body.fcmToken || req?.headers?.['x-fcm-token'],
+      platform: body.platform || req?.headers?.['x-platform'],
+      language: body.language || req?.headers?.['x-language'],
+    });
   }
 
   @Post('switch')
