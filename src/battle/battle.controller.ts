@@ -384,11 +384,36 @@ export class BattleController {
   @ApiQuery({ name: 'status', required: false, type: 'string' })
   @ApiOperation({
     summary:
-      'Explore battles (normal + marketplace by status, default LIVE) sorted by createdAt',
+      'Explore normal battles by status (default LIVE) sorted by createdAt. Marketplace battles: GET /battle/explore/marketplace',
   })
   async exploreBattles(@Req() req: Request, @Query('status') status?: string) {
     const userId = (req.user as any)?.userId;
     return this.battleService.exploreBattles(userId, status);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @Get('explore/marketplace')
+  @ApiQuery({ name: 'status', required: false, enum: ['LIVE', 'COMPLETED'], description: 'Default LIVE. RESOLVED is accepted as COMPLETED.' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, example: 20, description: 'Max 50' })
+  @ApiQuery({ name: 'category', required: false, example: 'Fashion' })
+  @ApiQuery({ name: 'search', required: false, example: 'summer', description: 'Searches battle title and description' })
+  @ApiOperation({
+    summary: 'Explore marketplace battles (paginated, newest first)',
+    description:
+      'Returns marketplace battles the user is allowed to see (Everyone, own battles, followers-only from followed sellers). LIVE shows battles that have started, not ended, and whose products are all active.',
+  })
+  async exploreMarketplaceBattles(
+    @Req() req: Request,
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('category') category?: string,
+    @Query('search') search?: string,
+  ) {
+    const userId = (req.user as any)?.userId;
+    return this.battleService.exploreMarketplaceBattles(userId, { status, page, limit, category, search });
   }
 
   @UseGuards(AuthGuard('jwt'))

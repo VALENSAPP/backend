@@ -2164,29 +2164,65 @@ export class BattleService {
     });
   }
 
+  // GET /battle/explore -> normal battles only.
+  // Marketplace battles are served by GET /battle/explore/marketplace (exploreMarketplaceBattles).
   async exploreBattles(userId: string, status?: string) {
-    const now = new Date();
     const parsedStatus = this.parseBattleStatus(status) || BattleStatus.LIVE;
-    const marketplaceStatus = this.mapBattleStatusToMarketplaceStatus(parsedStatus);
+    const normalItems = await this.getExploreNormalBattles(parsedStatus);
 
-    const [normalItems, marketplaceItems] = await Promise.all([
-      this.getExploreNormalBattles(parsedStatus),
-      marketplaceStatus
-        ? this.getExploreMarketplaceBattles(userId, marketplaceStatus, now)
-        : Promise.resolve([]),
-    ]);
-
-    return [...normalItems, ...marketplaceItems].sort(
+    return normalItems.sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
   }
 
-  private mapBattleStatusToMarketplaceStatus(
-    status: BattleStatus,
-  ): MarketplaceBattleStatus | null {
-    if (status === BattleStatus.LIVE) return MarketplaceBattleStatus.LIVE;
-    if (status === BattleStatus.RESOLVED) return MarketplaceBattleStatus.COMPLETED;
-    return null;
+  // GET /battle/explore/marketplace -> paginated marketplace battles (LIVE or COMPLETED),
+  // same item format the marketplace items of /battle/explore used to have.
+  async exploreMarketplaceBattles(
+    userId: string,
+    query: { status?: string; page?: string | number; limit?: string | number; category?: string; search?: string },
+  ) {
+    const now = new Date();
+
+    const rawStatus = String(query.status ?? '').trim().toUpperCase();
+    let status: MarketplaceBattleStatus;
+    if (!rawStatus || rawStatus === 'LIVE') {
+      status = MarketplaceBattleStatus.LIVE;
+    } else if (rawStatus === 'COMPLETED' || rawStatus === 'RESOLVED') {
+      status = MarketplaceBattleStatus.COMPLETED;
+    } else {
+      throw new BadRequestException('Invalid status. Use LIVE or COMPLETED');
+    }
+
+    const parsePositiveInt = (value: string | number | undefined, fallback: number, name: string) => {
+      if (value === undefined || value === null || String(value).trim() === '') return fallback;
+      const num = Number(value);
+      if (!Number.isInteger(num) || num < 1) {
+        throw new BadRequestException(`${name} must be a positive whole number`);
+      }
+      return num;
+    };
+    const page = parsePositiveInt(query.page, 1, 'page');
+    const limit = Math.min(parsePositiveInt(query.limit, 20, 'limit'), 50);
+    const skip = (page - 1) * limit;
+
+    const category = query.category?.trim() || undefined;
+    const search = query.search?.trim() || undefined;
+
+    const where = this.buildExploreMarketplaceWhere(userId, status, now, { category, search });
+
+    const [total, items] = await Promise.all([
+      this.prisma.marketplaceBattle.count({ where }),
+      this.getExploreMarketplaceBattles(userId, status, now, { skip, take: limit, category, search }),
+    ]);
+
+    return {
+      battles: items,
+      total,
+      page,
+      limit,
+      totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+      hasMore: skip + items.length < total,
+    };
   }
 
   private getMarketplaceVisibilityWhere(
@@ -2255,14 +2291,26 @@ export class BattleService {
     }));
   }
 
-  private async getExploreMarketplaceBattles(
+  private buildExploreMarketplaceWhere(
     viewerUserId: string,
     status: MarketplaceBattleStatus,
     now: Date,
-  ) {
-    const where: Prisma.MarketplaceBattleWhereInput = {
+    filters?: { category?: string; search?: string },
+  ): Prisma.MarketplaceBattleWhereInput {
+    const and: Prisma.MarketplaceBattleWhereInput[] = [this.getMarketplaceVisibilityWhere(viewerUserId)];
+    if (filters?.search) {
+      and.push({
+        OR: [
+          { title: { contains: filters.search, mode: 'insensitive' } },
+          { description: { contains: filters.search, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    return {
       status,
-      AND: [this.getMarketplaceVisibilityWhere(viewerUserId)],
+      AND: and,
+      ...(filters?.category ? { category: { equals: filters.category, mode: 'insensitive' } } : {}),
       ...(status === MarketplaceBattleStatus.LIVE
         ? {
           startAt: { lte: now },
@@ -2284,11 +2332,24 @@ export class BattleService {
         }
         : {}),
     };
+  }
+
+  private async getExploreMarketplaceBattles(
+    viewerUserId: string,
+    status: MarketplaceBattleStatus,
+    now: Date,
+    options?: { skip?: number; take?: number; category?: string; search?: string },
+  ) {
+    const where = this.buildExploreMarketplaceWhere(viewerUserId, status, now, {
+      category: options?.category,
+      search: options?.search,
+    });
 
     const battles = await this.prisma.marketplaceBattle.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
-      take: 50,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      skip: options?.skip ?? 0,
+      take: options?.take ?? 50,
       select: {
         id: true,
         sellerId: true,
