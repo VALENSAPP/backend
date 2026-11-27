@@ -89,6 +89,42 @@ export class MarketplaceWinnerPromotionService {
         return String(value || '').trim().toUpperCase();
     }
 
+    /**
+     * Prisma filter matching promotions of the given type. Older rows may have a null
+     * promoType, so free shipping is also matched by the freeShipping flag and discount
+     * by "not free shipping".
+     */
+    private promoTypeWhere(
+        promoType: MarketplaceWinnerPromotionType | null | undefined,
+    ): Prisma.MarketplaceWinnerPromotionWhereInput {
+        if (promoType === MarketplaceWinnerPromotionType.FREE_SHIPPING) {
+            return {
+                OR: [
+                    { promoType: MarketplaceWinnerPromotionType.FREE_SHIPPING },
+                    { freeShipping: true },
+                ],
+            };
+        }
+
+        return {
+            freeShipping: false,
+            OR: [
+                { promoType: MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H },
+                { promoType: null },
+            ],
+        };
+    }
+
+    private isFreeShippingPromotion(promotion: {
+        promoType: MarketplaceWinnerPromotionType | null;
+        freeShipping: boolean;
+    }): boolean {
+        return (
+            promotion.promoType === MarketplaceWinnerPromotionType.FREE_SHIPPING ||
+            promotion.freeShipping
+        );
+    }
+
     async getActivePromotionPackages() {
         return this.prisma.marketplaceWinnerPromotionPackage.findMany({
             where: { isActive: true },
@@ -269,11 +305,11 @@ export class MarketplaceWinnerPromotionService {
                     Boolean(promoPackage.description?.toUpperCase().includes('FREE SHIPPING')) ||
                     Boolean(promoPackage.name?.toUpperCase().includes('FREE SHIPPING'));
 
-                const effectivePromoType: MarketplaceWinnerPromotionType =
-                    dto.promoType ||
-                    (isFreeShippingPkg
-                        ? MarketplaceWinnerPromotionType.FREE_SHIPPING
-                        : MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H);
+                // The package decides the type: the seller pays for that package, so a
+                // mismatching promoType from the client must not change what is applied.
+                const effectivePromoType: MarketplaceWinnerPromotionType = isFreeShippingPkg
+                    ? MarketplaceWinnerPromotionType.FREE_SHIPPING
+                    : MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H;
 
                 const isDiscount = effectivePromoType === MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H;
                 const isFreeShipping = effectivePromoType === MarketplaceWinnerPromotionType.FREE_SHIPPING;
@@ -286,11 +322,13 @@ export class MarketplaceWinnerPromotionService {
                     }
                 }
 
-                // Clear unpaid intents so seller can start a fresh promotion checkout
+                // Clear unpaid intents of the SAME type so the seller can start a fresh checkout.
+                // A pending intent of the other type (discount vs free shipping) is left alone.
                 const pendingPromos = await tx.marketplaceWinnerPromotion.findMany({
                     where: {
                         battleId: battle.id,
                         status: MarketplaceWinnerPromotionStatus.PENDING_PAYMENT,
+                        ...this.promoTypeWhere(effectivePromoType),
                     },
                     select: { id: true, paymentId: true },
                 });
@@ -322,11 +360,14 @@ export class MarketplaceWinnerPromotionService {
                     });
                 }
 
+                // Only one active promotion per type per battle. A discount and a free-shipping
+                // promotion can run at the same time, each bought and paid separately.
                 const existingActive = await tx.marketplaceWinnerPromotion.findFirst({
                     where: {
                         battleId: battle.id,
                         status: MarketplaceWinnerPromotionStatus.ACTIVE,
                         endAt: { gt: now },
+                        ...this.promoTypeWhere(effectivePromoType),
                     },
                     select: { id: true, status: true },
                 });
@@ -741,29 +782,64 @@ export class MarketplaceWinnerPromotionService {
             },
         });
 
+        // A product can have a discount and a free-shipping promotion active together.
+        // Merge them into one entry per battle + product so the list shape stays the same
+        // and the product is not shown twice.
+        type ActivePromotion = (typeof promotions)[number];
+        const groups = new Map<string, { discount?: ActivePromotion; freeShipping?: ActivePromotion; first: ActivePromotion }>();
+        for (const promo of promotions) {
+            const key = `${promo.battleId}:${promo.productId}`;
+            const group = groups.get(key) ?? { first: promo };
+            if (this.isFreeShippingPromotion(promo)) {
+                group.freeShipping = group.freeShipping ?? promo;
+            } else {
+                group.discount = group.discount ?? promo;
+            }
+            groups.set(key, group);
+        }
+
+        const merged = [...groups.values()].map(({ discount, freeShipping, first }) => {
+            const primary = discount ?? freeShipping ?? first;
+            const endTimes = [discount?.endAt, freeShipping?.endAt].filter(
+                (value): value is Date => value instanceof Date,
+            );
+            const startTimes = [discount?.startAt, freeShipping?.startAt].filter(
+                (value): value is Date => value instanceof Date,
+            );
+            // Earliest end: the combined offer as shown is valid until the first part ends.
+            const endAt = endTimes.length
+                ? new Date(Math.min(...endTimes.map((value) => value.getTime())))
+                : primary.endAt;
+            const startAt = startTimes.length
+                ? new Date(Math.min(...startTimes.map((value) => value.getTime())))
+                : primary.startAt;
+
+            return {
+                promotionId: primary.id,
+                promoType: primary.promoType,
+                message: discount?.message ?? freeShipping?.message ?? primary.message,
+                discountPercent: discount ? discount.discountPercent : null,
+                freeShipping: Boolean(freeShipping),
+                originalPrice: primary.originalPrice,
+                promoPrice: discount ? discount.promoPrice : primary.originalPrice,
+                originalShippingFee: primary.originalShippingFee,
+                promoShippingFee: freeShipping ? 0 : primary.originalShippingFee,
+                startAt,
+                endAt,
+                remainingPromotionSeconds: endAt
+                    ? Math.max(0, Math.floor((endAt.getTime() - now.getTime()) / 1000))
+                    : 0,
+                product: primary.product,
+                battle: primary.battle,
+            };
+        });
+
         const page = query.page ?? 1;
         const limit = query.limit ?? 10;
-        const total = promotions.length;
+        const total = merged.length;
         const skip = (page - 1) * limit;
 
-        const data = promotions.slice(skip, skip + limit).map((promo) => ({
-            promotionId: promo.id,
-            promoType: promo.promoType,
-            message: promo.message,
-            discountPercent: promo.discountPercent,
-            freeShipping: promo.freeShipping,
-            originalPrice: promo.originalPrice,
-            promoPrice: promo.promoPrice,
-            originalShippingFee: promo.originalShippingFee,
-            promoShippingFee: promo.promoShippingFee,
-            startAt: promo.startAt,
-            endAt: promo.endAt,
-            remainingPromotionSeconds: promo.endAt
-                ? Math.max(0, Math.floor((promo.endAt.getTime() - now.getTime()) / 1000))
-                : 0,
-            product: promo.product,
-            battle: promo.battle,
-        }));
+        const data = merged.slice(skip, skip + limit);
 
         return {
             promotions: data,

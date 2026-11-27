@@ -1,5 +1,10 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { CartItemShippingChoice, ShippingOptions } from '@prisma/client';
+import {
+    CartItemShippingChoice,
+    MarketplaceWinnerPromotionStatus,
+    MarketplaceWinnerPromotionType,
+    ShippingOptions,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { assertUserKyc } from '../../common/kyc.util';
 import { formatCurrencyAmount, getCurrencySymbol, isBrazilUser } from '../../common/payment-provider.util';
@@ -13,6 +18,57 @@ export class CartService {
 
     private roundMoney(amount: number) {
         return Number(amount.toFixed(2));
+    }
+
+    /**
+     * Active winner promotions per product. Must match PaymentService so the checkout
+     * preview shows the same amounts the buyer is charged.
+     */
+    private async getActiveWinnerPromotionsByProduct(productIds: string[]) {
+        const byProduct = new Map<
+            string,
+            Array<{ promoType: MarketplaceWinnerPromotionType | null; discountPercent: number | null; freeShipping: boolean }>
+        >();
+        if (!productIds.length) return byProduct;
+
+        const now = new Date();
+        const promotions = await this.prisma.marketplaceWinnerPromotion.findMany({
+            where: {
+                productId: { in: productIds },
+                status: MarketplaceWinnerPromotionStatus.ACTIVE,
+                startAt: { lte: now },
+                endAt: { gt: now },
+            },
+            select: { productId: true, promoType: true, discountPercent: true, freeShipping: true },
+        });
+
+        for (const promotion of promotions) {
+            const list = byProduct.get(promotion.productId) ?? [];
+            list.push(promotion);
+            byProduct.set(promotion.productId, list);
+        }
+        return byProduct;
+    }
+
+    /** Same rules as PaymentService.resolveWinnerPromotionPricing (discount and free shipping can stack). */
+    private applyWinnerPromotionPricing(
+        price: number,
+        shippingFee: number | null,
+        promotions: Array<{ promoType: MarketplaceWinnerPromotionType | null; discountPercent: number | null; freeShipping: boolean }>,
+    ) {
+        const discountPromotion = promotions.find(
+            (promotion) => promotion.promoType === MarketplaceWinnerPromotionType.DISCOUNT_10_PERCENT_24H,
+        );
+        const hasFreeShipping = promotions.some(
+            (promotion) =>
+                promotion.promoType === MarketplaceWinnerPromotionType.FREE_SHIPPING || promotion.freeShipping,
+        );
+        const discountPercent = discountPromotion?.discountPercent ?? 0;
+
+        return {
+            price: discountPercent > 0 ? Number((price * (1 - discountPercent / 100)).toFixed(2)) : price,
+            shippingFee: hasFreeShipping ? 0 : shippingFee,
+        };
     }
 
     private resolveShippingSelection(
@@ -447,6 +503,10 @@ export class CartService {
             throw new BadRequestException('Cart is empty');
         }
 
+        const promotionsByProduct = await this.getActiveWinnerPromotionsByProduct(
+            cart.cartItems.map((item) => item.productId),
+        );
+
         const items: Array<{
             cartItemId: string;
             productId: string;
@@ -530,9 +590,14 @@ export class CartService {
                 });
             }
 
-            const unitPrice = this.roundMoney(product.price);
+            const promoPricing = this.applyWinnerPromotionPricing(
+                product.price,
+                product.shippingFee,
+                promotionsByProduct.get(product.id) ?? [],
+            );
+            const unitPrice = this.roundMoney(promoPricing.price);
             const lineTotal = this.roundMoney(unitPrice * cartItem.quantity);
-            const normalizedProductShippingFee = this.roundMoney(product.shippingFee ?? 0);
+            const normalizedProductShippingFee = this.roundMoney(promoPricing.shippingFee ?? 0);
 
             let selectedShippingChoice: CartItemShippingChoice | null = cartItem.selectedShippingChoice;
             let lineShippingFee = 0;
